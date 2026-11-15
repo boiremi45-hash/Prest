@@ -1,0 +1,238 @@
+{
+  "entities": {
+    "FfxPreset": {
+      "title": "FfxPreset",
+      "description": "An After Effects .ffx video preset stored in the user's cloud library, containing parsed effect modules and GPU-mappable parameters.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the preset."
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original or generated .ffx filename."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Color Grade",
+            "Motion & Shake",
+            "Glow & Optics",
+            "Film & Retro",
+            "Transform",
+            "Custom .ffx"
+          ],
+          "description": "Preset category."
+        },
+        "description": {
+          "type": "string",
+          "description": "Preset notes or effect summary."
+        },
+        "sourceType": {
+          "type": "string",
+          "enum": ["studio", "imported_ffx", "custom"],
+          "description": "Origin of the preset."
+        },
+        "ffxVersion": {
+          "type": "string",
+          "description": "After Effects FFX container format or version label."
+        },
+        "effectModules": {
+          "type": "array",
+          "description": "Parsed Adobe After Effects ADBE match names."
+        },
+        "tags": {
+          "type": "array",
+          "description": "Searchable tags for the preset."
+        },
+        "isFavorite": {
+          "type": "boolean",
+          "description": "Whether the preset is starred by the user."
+        },
+        "exposure": {
+          "type": "number",
+          "description": "Exposure compensation (-1.0 to 1.0)."
+        },
+        "contrast": {
+          "type": "number",
+          "description": "Contrast adjustment (-1.0 to 1.0)."
+        },
+        "saturation": {
+          "type": "number",
+          "description": "Saturation adjustment (-100.0 to 100.0)."
+        },
+        "hueShift": {
+          "type": "number",
+          "description": "Hue rotation in degrees (-180.0 to 180.0)."
+        },
+        "temperature": {
+          "type": "number",
+          "description": "Color temperature shift (-1.0 cool to 1.0 warm)."
+        },
+        "tint": {
+          "type": "number",
+          "description": "Color tint shift (-1.0 green to 1.0 magenta)."
+        },
+        "vignetteIntensity": {
+          "type": "number",
+          "description": "Optical vignette strength (0.0 to 1.0)."
+        },
+        "glowIntensity": {
+          "type": "number",
+          "description": "Halation / bloom glow intensity (0.0 to 1.0)."
+        },
+        "grainAmount": {
+          "type": "number",
+          "description": "Analog film grain intensity (0.0 to 1.0)."
+        },
+        "zoomPulse": {
+          "type": "number",
+          "description": "Keyframed zoom-in / pulse strength (0.0 to 1.0)."
+        },
+        "shakeIntensity": {
+          "type": "number",
+          "description": "Keyframed handheld/camera shake intensity (0.0 to 1.0)."
+        },
+        "rotationDegrees": {
+          "type": "number",
+          "description": "Static or tilted rotation angle (-180.0 to 180.0)."
+        },
+        "speedMultiplier": {
+          "type": "number",
+          "description": "Playback speed multiplier (0.25 to 4.0)."
+        },
+        "letterboxRatio": {
+          "type": "number",
+          "description": "Anamorphic letterbox crop ratio (0.0 to 0.35)."
+        },
+        "rawHeaderSnippet": {
+          "type": "string",
+          "description": "Extracted .ffx binary/XML header metadata snippet."
+        },
+        "usageCount": {
+          "type": "integer",
+          "description": "Number of times applied or rendered."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "name",
+        "fileName",
+        "category",
+        "sourceType",
+        "isFavorite",
+        "exposure",
+        "contrast",
+        "saturation",
+        "hueShift",
+        "temperature",
+        "tint",
+        "vignetteIntensity",
+        "glowIntensity",
+        "grainAmount",
+        "zoomPulse",
+        "shakeIntensity",
+        "rotationDegrees",
+        "speedMultiplier",
+        "letterboxRatio",
+        "usageCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ExportRecord": {
+      "title": "ExportRecord",
+      "description": "Record of a high-quality video rendered with an .ffx preset and downloaded to the local drive.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID."
+        },
+        "presetId": {
+          "type": "string",
+          "description": "ID of the applied preset."
+        },
+        "presetName": {
+          "type": "string",
+          "description": "Name of the applied preset."
+        },
+        "outputFileName": {
+          "type": "string",
+          "description": "Exported MP4 filename on local drive."
+        },
+        "resolutionLabel": {
+          "type": "string",
+          "description": "Export resolution target label."
+        },
+        "codecLabel": {
+          "type": "string",
+          "description": "Video codec used during export."
+        },
+        "bitrateMbps": {
+          "type": "integer",
+          "description": "Target video bitrate in Mbps."
+        },
+        "fileSizeBytes": {
+          "type": "integer",
+          "description": "Output MP4 file size in bytes."
+        },
+        "durationMs": {
+          "type": "integer",
+          "description": "Exported video duration in milliseconds."
+        },
+        "localUriString": {
+          "type": "string",
+          "description": "Local MediaStore or SAF content URI string."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "presetId",
+        "presetName",
+        "outputFileName",
+        "resolutionLabel",
+        "codecLabel",
+        "bitrateMbps",
+        "fileSizeBytes",
+        "durationMs",
+        "localUriString",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/presets/{presetId}": {
+      "schema": {
+        "$ref": "#/entities/FfxPreset"
+      },
+      "description": "User's private cloud-synced After Effects .ffx preset library."
+    },
+    "/users/{userId}/exports/{exportId}": {
+      "schema": {
+        "$ref": "#/entities/ExportRecord"
+      },
+      "description": "History of rendered videos exported to the user's local drive."
+    }
+  }
+}
