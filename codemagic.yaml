@@ -5,7 +5,6 @@ workflows:
     instance_type: mac_mini_m2
     environment:
       java: 17
-      android_sdk: latest
     scripts:
       - name: Give permission to gradlew
         script: |
