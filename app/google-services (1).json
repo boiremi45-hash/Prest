@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "401124451965",
+    "project_id": "presetfx-db2bf",
+    "storage_bucket": "presetfx-db2bf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:401124451965:android:4fd45238711ed261b0b314",
+        "android_client_info": {
+          "package_name": "com.aistudio.presetfx.vfxmkr"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "401124451965-6lhhem25e7h8bhensfv7394obphp7kmn.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDQI5lUYTdte8OhtS9rlsYbL2QiVU70wcQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "401124451965-6lhhem25e7h8bhensfv7394obphp7kmn.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
