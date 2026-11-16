@@ -126,6 +126,22 @@ fun onGoogleSignInClicked(
     }
 }
 
+fun signInAsGuest(
+    scope: CoroutineScope,
+    onAuthSuccess: () -> Unit,
+    onAuthError: (String) -> Unit = {}
+) {
+    scope.launch {
+        try {
+            Firebase.auth.signInAnonymously().await()
+            onAuthSuccess()
+        } catch (e: Exception) {
+            Log.e(AUTH_TAG, "Guest Sign-In failed", e)
+            onAuthError(e.localizedMessage ?: "Guest sign-in failed. Please try again.")
+        }
+    }
+}
+
 fun signOutUser(
     credentialManager: CredentialManager,
     scope: CoroutineScope,
