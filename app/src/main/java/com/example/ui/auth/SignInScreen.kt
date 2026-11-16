@@ -26,11 +26,13 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.MovieCreation
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import com.example.R
 import com.example.auth.onGoogleSignInClicked
+import com.example.auth.signInAsGuest
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.ElectricViolet
 import com.example.ui.theme.ObsidianBackground
@@ -69,6 +72,7 @@ fun SignInScreen(
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
     var isLoading by remember { mutableStateOf(false) }
+    var isGuestLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     Box(
@@ -218,7 +222,7 @@ fun SignInScreen(
                             },
                         )
                     },
-                    enabled = !isLoading,
+                    enabled = !isLoading && !isGuestLoading,
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ElectricViolet,
@@ -249,6 +253,59 @@ fun SignInScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = stringResource(R.string.sign_in_google_cta),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        errorMessage = null
+                        isGuestLoading = true
+                        signInAsGuest(
+                            scope = scope,
+                            onAuthSuccess = {
+                                isGuestLoading = false
+                                onAuthSuccess()
+                            },
+                            onAuthError = { msg ->
+                                isGuestLoading = false
+                                errorMessage = msg
+                            }
+                        )
+                    },
+                    enabled = !isLoading && !isGuestLoading,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("guest_sign_in_button"),
+                ) {
+                    if (isGuestLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            color = Color.White,
+                            strokeWidth = 2.5.dp,
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Continuing as Guest...",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Continue as Guest",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         )
                     }
