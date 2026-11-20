@@ -2,13 +2,18 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Obsidian VFX Studio Palette
-val ObsidianBackground = Color(0xFF09090F)
-val ObsidianSurface = Color(0xFF11111B)
-val ObsidianSurfaceLow = Color(0xFF151523)
-val ObsidianSurfaceContainer = Color(0xFF1A1A2B)
-val ObsidianSurfaceHigh = Color(0xFF232338)
-val ObsidianSurfaceHighest = Color(0xFF2D2D46)
+// LUNA Dark Motion Studio Palette (inspired by Alight Motion editor)
+val ObsidianBackground = Color(0xFF13141F)
+val ObsidianSurface = Color(0xFF191B29)
+val ObsidianSurfaceLow = Color(0xFF1E2030)
+val ObsidianSurfaceContainer = Color(0xFF232638)
+val ObsidianSurfaceHigh = Color(0xFF2B2F45)
+val ObsidianSurfaceHighest = Color(0xFF353A54)
+
+val LunaMint = Color(0xFF1FE0A5)
+val LunaMintContainer = Color(0xFF0E3F34)
+val LunaTrackTeal = Color(0xFF4BB8C9)
+val LunaTrackEmerald = Color(0xFF45C6A2)
 
 val ElectricViolet = Color(0xFF8B5CF6)
 val LuminousViolet = Color(0xFFA78BFA)
@@ -23,13 +28,13 @@ val StudioAmber = Color(0xFFF59E0B)
 val DeepAmberContainer = Color(0xFF452806)
 val OnAmberContainer = Color(0xFFFEF3C7)
 
-val StudioSuccess = Color(0xFF10B981)
+val StudioSuccess = Color(0xFF1FE0A5)
 val StudioError = Color(0xFFEF4444)
 val DeepErrorContainer = Color(0xFF4C1419)
 val OnErrorContainer = Color(0xFFFEE2E2)
 
-val TextPrimary = Color(0xFFF4F4FA)
-val TextSecondary = Color(0xFFA3A3BE)
-val TextMuted = Color(0xFF6E6E8A)
-val OutlineSubtle = Color(0xFF2E2E47)
-val OutlineStrong = Color(0xFF454569)
+val TextPrimary = Color(0xFFF4F5FA)
+val TextSecondary = Color(0xFFA7ACC4)
+val TextMuted = Color(0xFF6F7592)
+val OutlineSubtle = Color(0xFF32364F)
+val OutlineStrong = Color(0xFF484E70)

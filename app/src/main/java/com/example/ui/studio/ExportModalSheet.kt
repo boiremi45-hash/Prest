@@ -36,8 +36,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -64,8 +62,8 @@ import com.example.domain.video.ExportUiState
 import com.example.domain.video.VideoMetadata
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.DeepCyanContainer
-import com.example.ui.theme.DeepVioletContainer
-import com.example.ui.theme.ElectricViolet
+import com.example.ui.theme.LunaMint
+import com.example.ui.theme.LunaMintContainer
 import com.example.ui.theme.ObsidianBackground
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceContainer
@@ -73,6 +71,8 @@ import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.OutlineSubtle
 import com.example.ui.theme.StudioSuccess
 import java.util.Locale
+
+private val BITRATE_PRESETS = listOf(12 to "Web", 24 to "High", 40 to "Ultra", 60 to "Master")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,7 +89,7 @@ fun ExportModalSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val defaultBaseName = remember(video.displayName, preset.name) {
-        val clipBase = video.displayName.substringBeforeLast('.').take(20).ifBlank { "Clip" }
+        val clipBase = video.displayName.substringBeforeLast('.').take(20).ifBlank { "LUNA_Clip" }
         val fxBase = preset.name.replace(Regex("[^a-zA-Z0-9]+"), "_").trim('_').take(18)
         "${clipBase}_$fxBase"
     }
@@ -126,12 +126,12 @@ fun ExportModalSheet(
                     Icon(
                         imageVector = Icons.Filled.HighQuality,
                         contentDescription = null,
-                        tint = CyberCyan,
+                        tint = LunaMint,
                         modifier = Modifier.size(24.dp),
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "High-Quality Render & Download",
+                        text = "LUNA High-Quality Export",
                         style = MaterialTheme.typography.titleLarge,
                     )
                 }
@@ -142,7 +142,6 @@ fun ExportModalSheet(
                 }
             }
 
-            // Active summary pill
             Surface(
                 color = ObsidianSurface,
                 shape = RoundedCornerShape(14.dp),
@@ -158,9 +157,9 @@ fun ExportModalSheet(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "PRESET: ${preset.fileName}",
+                        text = "PRESET (${preset.presetFormat}): ${preset.fileName}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = CyberCyan,
+                        color = LunaMint,
                     )
                 }
             }
@@ -172,7 +171,7 @@ fun ExportModalSheet(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
                             .background(ObsidianSurfaceContainer)
-                            .border(1.dp, CyberCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                            .border(1.dp, LunaMint.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
                             .padding(18.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
@@ -189,12 +188,12 @@ fun ExportModalSheet(
                             Text(
                                 text = "${exportState.progressPercent}%",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = CyberCyan,
+                                color = LunaMint,
                             )
                         }
                         LinearProgressIndicator(
                             progress = { exportState.progressPercent / 100f },
-                            color = CyberCyan,
+                            color = LunaMint,
                             trackColor = ObsidianSurface,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -202,7 +201,7 @@ fun ExportModalSheet(
                                 .clip(RoundedCornerShape(4.dp)),
                         )
                         Text(
-                            text = "Encoding video frames with hardware OpenGL shaders...",
+                            text = "Encoding hardware OpenGL shaders & LUTs into Downloads/LUNA...",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -271,7 +270,7 @@ fun ExportModalSheet(
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = CyberCyan,
+                                    containerColor = LunaMint,
                                     contentColor = ObsidianBackground,
                                 ),
                                 modifier = Modifier.weight(1f),
@@ -336,10 +335,7 @@ fun ExportModalSheet(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                Text(
-                    text = "Export Resolution",
-                    style = MaterialTheme.typography.titleSmall,
-                )
+                Text(text = "Export Resolution", style = MaterialTheme.typography.titleSmall)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -361,18 +357,15 @@ fun ExportModalSheet(
                                 )
                             },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = DeepVioletContainer,
-                                selectedLabelColor = Color.White,
+                                selectedContainerColor = LunaMintContainer,
+                                selectedLabelColor = LunaMint,
                             ),
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
 
-                Text(
-                    text = "Hardware Codec",
-                    style = MaterialTheme.typography.titleSmall,
-                )
+                Text(text = "Hardware Codec", style = MaterialTheme.typography.titleSmall)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -392,27 +385,30 @@ fun ExportModalSheet(
                     }
                 }
 
+                Text(text = "Bitrate Quality", style = MaterialTheme.typography.titleSmall)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text("Target Video Bitrate", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        text = "$bitrateMbps Mbps",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CyberCyan,
-                    )
+                    BITRATE_PRESETS.forEach { (mbps, title) ->
+                        val selected = bitrateMbps == mbps
+                        FilterChip(
+                            selected = selected,
+                            onClick = { bitrateMbps = mbps },
+                            label = {
+                                Text(
+                                    text = "$title\n${mbps}M",
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = LunaMintContainer,
+                                selectedLabelColor = LunaMint,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
-                Slider(
-                    value = bitrateMbps.toFloat(),
-                    onValueChange = { bitrateMbps = it.toInt() },
-                    valueRange = 8f..60f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = CyberCyan,
-                        activeTrackColor = CyberCyan,
-                    ),
-                )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -422,7 +418,7 @@ fun ExportModalSheet(
                     Column {
                         Text("Mute Audio Track", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            text = "Strip original audio during export",
+                            text = "Strip audio stream during render",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -447,8 +443,8 @@ fun ExportModalSheet(
                     },
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = ElectricViolet,
-                        contentColor = Color.White,
+                        containerColor = LunaMint,
+                        contentColor = ObsidianBackground,
                     ),
                     modifier = Modifier
                         .fillMaxWidth()

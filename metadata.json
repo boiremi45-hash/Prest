@@ -1,6 +1,6 @@
 {
-  "name": "PresetFX",
-  "description": "Apply After Effects .ffx presets to your videos, manage a cloud-synced preset library, and export high-quality rendered videos directly to your local drive.",
+  "name": "LUNA",
+  "description": "LUNA mobile video & motion studio: apply After Effects .ffx presets and .cube 3D LUTs on a multi-track timeline and render high-quality MP4 videos directly to your local drive.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

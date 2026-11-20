@@ -1,316 +1,165 @@
 package com.example.data.repository
 
 import android.content.Context
-import com.example.R
+import com.example.data.local.AppDatabase
+import com.example.data.local.ExportDao
+import com.example.data.local.PresetDao
+import com.example.data.local.toEntity
 import com.example.data.model.ExportRecord
 import com.example.data.model.FfxPreset
 import com.example.data.model.PresetCategory
-import com.example.data.remote.OperationType
-import com.example.data.remote.handleFirestoreError
-import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.FirebaseFirestoreException
-import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
+import java.util.UUID
 
 class PresetRepository(
-    private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance(db.app),
+    private val presetDao: PresetDao,
+    private val exportDao: ExportDao,
 ) {
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        presetDao = AppDatabase.getInstance(context).presetDao(),
+        exportDao = AppDatabase.getInstance(context).exportDao(),
     )
 
-    private fun requireUserId(): String {
-        return auth.currentUser?.uid
-            ?: throw IllegalStateException("User must be signed in with Google before accessing Firestore.")
-    }
+    fun observePresets(): Flow<List<FfxPreset>> =
+        presetDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
-    fun observePresets(userId: String): Flow<List<FfxPreset>> = flow {
-        val path = "users/$userId/presets"
-        emitAll(
-            db.collection("users").document(userId).collection("presets")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.toObjects(
-                        FfxPreset::class.java,
-                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    ).sortedByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
-                }
-                .catch { error ->
-                    val firestoreError = generateSequence(error) { it.cause }
-                        .filterIsInstance<FirebaseFirestoreException>()
-                        .firstOrNull()
-                    if (firestoreError == null && error is CancellationException) throw error
-                    val exceptionToLog = firestoreError ?: (error as? Exception)
-                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
-                        handleFirestoreError(exceptionToLog, OperationType.LIST, path)
-                    }
-                    throw error
-                }
-        )
-    }
+    fun observeExports(): Flow<List<ExportRecord>> =
+        exportDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
-    fun observeExports(userId: String): Flow<List<ExportRecord>> = flow {
-        val path = "users/$userId/exports"
-        emitAll(
-            db.collection("users").document(userId).collection("exports")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.toObjects(
-                        ExportRecord::class.java,
-                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    ).sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
-                }
-                .catch { error ->
-                    val firestoreError = generateSequence(error) { it.cause }
-                        .filterIsInstance<FirebaseFirestoreException>()
-                        .firstOrNull()
-                    if (firestoreError == null && error is CancellationException) throw error
-                    val exceptionToLog = firestoreError ?: (error as? Exception)
-                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
-                        handleFirestoreError(exceptionToLog, OperationType.LIST, path)
-                    }
-                    throw error
-                }
-        )
-    }
-
-    suspend fun getPreset(userId: String, presetId: String): Result<FfxPreset?> {
-        val docRef = db.collection("users").document(userId).collection("presets").document(presetId)
+    suspend fun getPreset(presetId: String): Result<FfxPreset?> {
         return try {
-            val snap = docRef.get().await()
-            val preset = snap.toObject(
-                FfxPreset::class.java,
-                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-            )
-            Result.success(preset)
+            Result.success(presetDao.getById(presetId)?.toDomain())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.GET, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun createPreset(preset: FfxPreset): Result<String> {
-        val uid = requireUserId()
         val clean = preset.clamped()
-        val docRef = db.collection("users").document(uid).collection("presets").document()
-        val payload = buildCreatePayload(uid, clean)
+        val id = clean.id.ifBlank { UUID.randomUUID().toString() }
+        val now = System.currentTimeMillis()
+        val createdAt = if (clean.createdAtMillis > 0L) clean.createdAtMillis else now
         return try {
-            docRef.set(payload).await()
-            Result.success(docRef.id)
+            presetDao.upsert(clean.toEntity(resolvedId = id, createdAt = createdAt, updatedAt = now))
+            Result.success(id)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun updatePreset(preset: FfxPreset): Result<Unit> {
-        val uid = requireUserId()
         require(preset.id.isNotBlank()) { "Preset ID must not be blank for update" }
         val clean = preset.clamped()
-        val docRef = db.collection("users").document(uid).collection("presets").document(preset.id)
-        val payload = mapOf(
-            "name" to clean.name,
-            "fileName" to clean.fileName,
-            "category" to clean.category,
-            "description" to clean.description,
-            "ffxVersion" to clean.ffxVersion,
-            "effectModules" to clean.effectModules,
-            "tags" to clean.tags,
-            "isFavorite" to clean.isFavorite,
-            "exposure" to clean.exposure,
-            "contrast" to clean.contrast,
-            "saturation" to clean.saturation,
-            "hueShift" to clean.hueShift,
-            "temperature" to clean.temperature,
-            "tint" to clean.tint,
-            "vignetteIntensity" to clean.vignetteIntensity,
-            "glowIntensity" to clean.glowIntensity,
-            "grainAmount" to clean.grainAmount,
-            "zoomPulse" to clean.zoomPulse,
-            "shakeIntensity" to clean.shakeIntensity,
-            "rotationDegrees" to clean.rotationDegrees,
-            "speedMultiplier" to clean.speedMultiplier,
-            "letterboxRatio" to clean.letterboxRatio,
-            "rawHeaderSnippet" to clean.rawHeaderSnippet,
-            "usageCount" to clean.usageCount,
-            "updatedAt" to FieldValue.serverTimestamp(),
-        )
+        val now = System.currentTimeMillis()
         return try {
-            docRef.update(payload).await()
+            val existing = presetDao.getById(clean.id)
+            val createdAt = existing?.createdAtMillis?.takeIf { it > 0L }
+                ?: clean.createdAtMillis.takeIf { it > 0L }
+                ?: now
+            presetDao.upsert(clean.toEntity(resolvedId = clean.id, createdAt = createdAt, updatedAt = now))
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun toggleFavorite(presetId: String, isFavorite: Boolean): Result<Unit> {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("presets").document(presetId)
         return try {
-            docRef.update(
-                mapOf(
-                    "isFavorite" to isFavorite,
-                    "updatedAt" to FieldValue.serverTimestamp(),
-                )
-            ).await()
+            presetDao.updateFavorite(presetId, isFavorite, System.currentTimeMillis())
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun incrementUsage(presetId: String): Result<Unit> {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("presets").document(presetId)
         return try {
-            docRef.update(
-                mapOf(
-                    "usageCount" to FieldValue.increment(1L),
-                    "updatedAt" to FieldValue.serverTimestamp(),
-                )
-            ).await()
+            presetDao.incrementUsage(presetId, System.currentTimeMillis())
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun deletePreset(presetId: String): Result<Unit> {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("presets").document(presetId)
         return try {
-            docRef.delete().await()
+            presetDao.deleteById(presetId)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun seedStarterPackIfEmpty(): Result<Int> {
-        val uid = requireUserId()
-        val colRef = db.collection("users").document(uid).collection("presets")
         return try {
-            val existing = colRef.limit(1).get().await()
-            if (!existing.isEmpty) {
+            if (presetDao.count() > 0) {
                 return Result.success(0)
             }
-            val batch = db.batch()
-            val starters = starterFfxPresets()
-            starters.forEach { preset ->
-                val docRef = colRef.document()
-                batch.set(docRef, buildCreatePayload(uid, preset.clamped()))
+            val now = System.currentTimeMillis()
+            val starters = starterFfxPresets().mapIndexed { idx, preset ->
+                val id = preset.id.ifBlank { UUID.randomUUID().toString() }
+                preset.clamped().toEntity(
+                    resolvedId = id,
+                    createdAt = now - (idx * 1000L),
+                    updatedAt = now - (idx * 1000L),
+                )
             }
-            batch.commit().await()
+            presetDao.insertAll(starters)
             Result.success(starters.size)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, colRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun recordExport(record: ExportRecord): Result<String> {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("exports").document()
-        val payload = mapOf(
-            "userId" to uid,
-            "presetId" to record.presetId.take(128).ifBlank { "custom" },
-            "presetName" to record.presetName.take(80).ifBlank { "PresetFX Render" },
-            "outputFileName" to record.outputFileName.take(150).ifBlank { "PresetFX_Export.mp4" },
-            "resolutionLabel" to record.resolutionLabel.take(40),
-            "codecLabel" to record.codecLabel.take(40),
-            "bitrateMbps" to record.bitrateMbps.coerceIn(1L, 200L),
-            "fileSizeBytes" to record.fileSizeBytes.coerceAtLeast(0L),
-            "durationMs" to record.durationMs.coerceAtLeast(0L),
-            "localUriString" to record.localUriString.take(500),
-            "createdAt" to FieldValue.serverTimestamp(),
+        val id = record.id.ifBlank { UUID.randomUUID().toString() }
+        val now = if (record.createdAtMillis > 0L) record.createdAtMillis else System.currentTimeMillis()
+        val sanitized = record.copy(
+            id = id,
+            presetId = record.presetId.take(128).ifBlank { "luna_timeline" },
+            presetName = record.presetName.take(80).ifBlank { "LUNA Render" },
+            outputFileName = record.outputFileName.take(150).ifBlank { "LUNA_Export.mp4" },
+            bitrateMbps = record.bitrateMbps.coerceIn(1L, 200L),
+            fileSizeBytes = record.fileSizeBytes.coerceAtLeast(0L),
+            durationMs = record.durationMs.coerceAtLeast(0L),
+            localUriString = record.localUriString.take(500),
+            createdAtMillis = now,
         )
         return try {
-            docRef.set(payload).await()
-            Result.success(docRef.id)
+            exportDao.insert(sanitized.toEntity(resolvedId = id, createdAt = now))
+            Result.success(id)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, docRef.path)
             Result.failure(e)
         }
     }
 
     suspend fun deleteExportRecord(exportId: String): Result<Unit> {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("exports").document(exportId)
         return try {
-            docRef.delete().await()
+            exportDao.deleteById(exportId)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docRef.path)
             Result.failure(e)
         }
-    }
-
-    private fun buildCreatePayload(uid: String, clean: FfxPreset): Map<String, Any> {
-        return mapOf(
-            "userId" to uid,
-            "name" to clean.name,
-            "fileName" to clean.fileName,
-            "category" to clean.category,
-            "description" to clean.description,
-            "sourceType" to clean.sourceType,
-            "ffxVersion" to clean.ffxVersion,
-            "effectModules" to clean.effectModules,
-            "tags" to clean.tags,
-            "isFavorite" to clean.isFavorite,
-            "exposure" to clean.exposure,
-            "contrast" to clean.contrast,
-            "saturation" to clean.saturation,
-            "hueShift" to clean.hueShift,
-            "temperature" to clean.temperature,
-            "tint" to clean.tint,
-            "vignetteIntensity" to clean.vignetteIntensity,
-            "glowIntensity" to clean.glowIntensity,
-            "grainAmount" to clean.grainAmount,
-            "zoomPulse" to clean.zoomPulse,
-            "shakeIntensity" to clean.shakeIntensity,
-            "rotationDegrees" to clean.rotationDegrees,
-            "speedMultiplier" to clean.speedMultiplier,
-            "letterboxRatio" to clean.letterboxRatio,
-            "rawHeaderSnippet" to clean.rawHeaderSnippet,
-            "usageCount" to clean.usageCount,
-            "createdAt" to FieldValue.serverTimestamp(),
-            "updatedAt" to FieldValue.serverTimestamp(),
-        )
     }
 
     companion object {

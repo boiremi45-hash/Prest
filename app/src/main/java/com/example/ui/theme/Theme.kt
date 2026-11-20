@@ -7,19 +7,19 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 
-private val PresetFxDarkColorScheme = darkColorScheme(
-    primary = ElectricViolet,
-    onPrimary = TextPrimary,
-    primaryContainer = DeepVioletContainer,
-    onPrimaryContainer = OnVioletContainer,
+private val LunaDarkColorScheme = darkColorScheme(
+    primary = LunaMint,
+    onPrimary = ObsidianBackground,
+    primaryContainer = LunaMintContainer,
+    onPrimaryContainer = LunaMint,
     secondary = CyberCyan,
     onSecondary = ObsidianBackground,
     secondaryContainer = DeepCyanContainer,
     onSecondaryContainer = OnCyanContainer,
-    tertiary = StudioAmber,
-    onTertiary = ObsidianBackground,
-    tertiaryContainer = DeepAmberContainer,
-    onTertiaryContainer = OnAmberContainer,
+    tertiary = ElectricViolet,
+    onTertiary = TextPrimary,
+    tertiaryContainer = DeepVioletContainer,
+    onTertiaryContainer = OnVioletContainer,
     background = ObsidianBackground,
     onBackground = TextPrimary,
     surface = ObsidianSurface,
@@ -39,7 +39,7 @@ private val PresetFxDarkColorScheme = darkColorScheme(
     onErrorContainer = OnErrorContainer,
 )
 
-private val PresetFxShapes = Shapes(
+private val LunaShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
     small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(16.dp),
@@ -48,13 +48,13 @@ private val PresetFxShapes = Shapes(
 )
 
 @Composable
-fun PresetFxTheme(
+fun LunaTheme(
     content: @Composable () -> Unit,
 ) {
     MaterialTheme(
-        colorScheme = PresetFxDarkColorScheme,
+        colorScheme = LunaDarkColorScheme,
         typography = PresetFxTypography,
-        shapes = PresetFxShapes,
+        shapes = LunaShapes,
         content = content,
     )
 }

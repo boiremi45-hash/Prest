@@ -18,14 +18,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.VideoFile
@@ -44,12 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.example.data.model.ExportRecord
 import com.example.domain.video.UiState
 import com.example.ui.theme.CyberCyan
@@ -59,20 +54,17 @@ import com.example.ui.theme.ElectricViolet
 import com.example.ui.theme.ObsidianBackground
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceContainer
-import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.OutlineSubtle
 import com.example.ui.theme.StudioSuccess
-import com.google.firebase.auth.FirebaseUser
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 @Composable
 fun ExportsScreen(
-    user: FirebaseUser?,
     exportsState: UiState<List<ExportRecord>>,
     onSaveCopyToFolder: (ExportRecord) -> Unit,
     onDeleteExportRecord: (String) -> Unit,
-    onSignOut: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -86,14 +78,14 @@ fun ExportsScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text = "Exports & Account",
+            text = "Rendered Exports",
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onBackground,
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Creator Profile Card
+        // Studio Render Engine Status Card
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -103,77 +95,43 @@ fun ExportsScreen(
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (user?.photoUrl != null) {
-                AsyncImage(
-                    model = user.photoUrl,
-                    contentDescription = "Creator avatar",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape),
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(DeepVioletContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.HighQuality,
+                    contentDescription = null,
+                    tint = ElectricViolet,
+                    modifier = Modifier.size(26.dp),
                 )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape)
-                        .background(DeepVioletContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = (user?.displayName?.firstOrNull() ?: user?.email?.firstOrNull() ?: 'P').uppercase(),
-                        style = MaterialTheme.typography.titleLarge,
-                        color = ElectricViolet,
-                    )
-                }
             }
 
             Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = user?.displayName?.takeIf { it.isNotBlank() } ?: "Studio Creator",
+                    text = "LUNA Local Render Engine",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = user?.email ?: "Google Account Connected",
+                    text = "Hardware Media3 H.264 / H.265 • Up to 4K 60 Mbps",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Filled.CloudDone,
-                        contentDescription = null,
-                        tint = StudioSuccess,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Firestore Cloud Sync Active",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioSuccess,
-                    )
-                }
-            }
-
-            OutlinedButton(
-                onClick = onSignOut,
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                modifier = Modifier.testTag("sign_out_button"),
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Logout,
-                    contentDescription = "Sign out",
-                    modifier = Modifier.size(16.dp),
+                Text(
+                    text = "On-Device Library Ready (No Sign-In Required)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = StudioSuccess,
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Sign Out", style = MaterialTheme.typography.labelLarge)
             }
         }
 
@@ -199,7 +157,7 @@ fun ExportsScreen(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "Rendered MP4 videos are saved directly to Downloads/PresetFX on your local drive, or anywhere you choose via Save Copy.",
+                    text = "Rendered MP4 videos are saved directly to Downloads/LUNA on your local drive, or anywhere you choose via Save As.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -255,7 +213,7 @@ fun ExportsScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Pick a video in the Studio tab, apply an .ffx preset, and tap Export MP4 to download a high-quality render.",
+                            text = "Open a project in the Editor tab, apply an .ffx or .cube preset layer, and tap Share/Export to download a high-quality MP4.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -312,9 +270,11 @@ private fun ExportRecordCard(
     onDelete: () -> Unit,
 ) {
     val sizeMb = String.format(Locale.US, "%.1f MB", record.fileSizeBytes / (1024.0 * 1024.0))
-    val dateLabel = record.createdAt?.toDate()?.let {
-        SimpleDateFormat("MMM d, HH:mm", Locale.US).format(it)
-    } ?: "Just now"
+    val dateLabel = if (record.createdAtMillis > 0L) {
+        SimpleDateFormat("MMM d, HH:mm", Locale.US).format(Date(record.createdAtMillis))
+    } else {
+        "Just now"
+    }
 
     Column(
         modifier = Modifier

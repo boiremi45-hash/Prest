@@ -30,7 +30,7 @@ enum class ExportCodec(val label: String, val mimeType: String) {
 }
 
 data class ExportConfig(
-    val fileName: String = "PresetFX_Render",
+    val fileName: String = "LUNA_Render",
     val resolution: ExportResolution = ExportResolution.FHD_1080P,
     val codec: ExportCodec = ExportCodec.H264,
     val bitrateMbps: Int = 24,

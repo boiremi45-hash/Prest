@@ -3,53 +3,63 @@ package com.example.ui.studio
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddCircleOutline
-import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Compare
+import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.FileCopy
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.FilterNone
+import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,21 +69,21 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
@@ -82,18 +92,22 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import com.example.R
+import com.example.data.model.AspectPreset
+import com.example.data.model.BlendStyle
+import com.example.data.model.CanvasFitMode
+import com.example.data.model.ExportRecord
 import com.example.data.model.FfxPreset
+import com.example.data.model.LayerKind
+import com.example.data.model.LayerShapeType
+import com.example.data.model.TimelineLayer
 import com.example.domain.video.ExportConfig
 import com.example.domain.video.ExportUiState
 import com.example.domain.video.UiState
 import com.example.domain.video.VideoEffectsEngine
 import com.example.domain.video.VideoMetadata
-import com.example.data.model.ExportRecord
 import com.example.ui.theme.CyberCyan
-import com.example.ui.theme.DeepCyanContainer
-import com.example.ui.theme.DeepVioletContainer
-import com.example.ui.theme.ElectricViolet
+import com.example.ui.theme.LunaMint
+import com.example.ui.theme.LunaMintContainer
 import com.example.ui.theme.ObsidianBackground
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceContainer
@@ -101,28 +115,53 @@ import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.OutlineSubtle
 import kotlinx.coroutines.delay
 import java.util.Locale
-
-private enum class InspectorGroup(val label: String) {
-    COLOR("Color"),
-    OPTICS("Optics"),
-    MOTION("Motion"),
-}
+import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
 @Composable
 fun StudioScreen(
+    projectTitle: String,
+    aspectPreset: AspectPreset,
+    projectResolution: String,
+    projectFps: Int,
+    canvasFitMode: CanvasFitMode,
     selectedVideo: VideoMetadata?,
     activePreset: FfxPreset,
+    layers: List<TimelineLayer>,
+    selectedLayerId: String?,
+    playheadMs: Long,
+    canUndo: Boolean,
+    canRedo: Boolean,
     bypassEffects: Boolean,
     presetsState: UiState<List<FfxPreset>>,
     exportState: ExportUiState,
+    onNavigateBackHome: () -> Unit,
+    onUpdateProjectSettings: (String, AspectPreset, String, Int) -> Unit,
     onPickVideo: () -> Unit,
     onImportFfx: () -> Unit,
     onSelectPreset: (FfxPreset) -> Unit,
+    onAddPresetLayer: (FfxPreset) -> Unit,
+    onAddShapeLayer: (LayerShapeType) -> Unit,
+    onAddTextLayer: (String) -> Unit,
+    onSelectLayer: (String?) -> Unit,
+    onToggleLayerVisibility: (String) -> Unit,
+    onUpdatePlayhead: (Long) -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onDuplicateLayer: () -> Unit,
+    onDeleteSelectedLayer: () -> Unit,
+    onCycleCanvasFit: () -> Unit,
+    onTrimLeft: () -> Unit,
+    onSplit: () -> Unit,
+    onTrimRight: () -> Unit,
+    onToggleMute: () -> Unit,
+    onSetSpeed: (Float) -> Unit,
+    onSetColor: (Long) -> Unit,
+    onToggleBorderShadow: () -> Unit,
+    onSetBlendOpacity: (BlendStyle, Float) -> Unit,
+    onUpdateTransform: (Int, Boolean) -> Unit,
+    onUpdateShapeOrText: (LayerShapeType?, String?) -> Unit,
     onToggleBypass: () -> Unit,
-    onUpdatePreset: ((FfxPreset) -> FfxPreset) -> Unit,
-    onResetPreset: () -> Unit,
-    onSavePresetToCloud: (asNew: Boolean, customName: String?) -> Unit,
     onStartExport: (ExportConfig) -> Unit,
     onCancelExport: () -> Unit,
     onResetExportState: () -> Unit,
@@ -130,31 +169,27 @@ fun StudioScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    var inspectorGroup by remember { mutableStateOf(InspectorGroup.COLOR) }
+    val presetsList = (presetsState as? UiState.Success)?.data.orEmpty()
+    val selectedLayer = layers.firstOrNull { it.id == selectedLayerId }
+    val clipDurationMs = selectedVideo?.durationMs?.takeIf { it > 500L } ?: 15_000L
+
     var showExportSheet by remember { mutableStateOf(false) }
-    var showSaveAsDialog by remember { mutableStateOf(false) }
+    var showProjectSettingsDialog by remember { mutableStateOf(false) }
+    var showAddLayerDrawer by remember { mutableStateOf(false) }
+    var activeToolPanel by remember { mutableStateOf(LayerToolPanel.NONE) }
+    var viewportZoomed by remember { mutableStateOf(false) }
+    var isPlaying by remember { mutableStateOf(false) }
 
     val exoPlayer = remember(context) {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_ALL
-            playWhenReady = true
         }
     }
-
-    var isPlaying by remember { mutableStateOf(false) }
-    var currentPosMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(0L) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
-            }
-
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (exoPlayer.duration > 0) {
-                    durationMs = exoPlayer.duration
-                }
             }
         }
         exoPlayer.addListener(listener)
@@ -164,564 +199,481 @@ fun StudioScreen(
         }
     }
 
-    // Poll playhead position cleanly while playing
-    LaunchedEffect(exoPlayer, selectedVideo) {
-        while (true) {
-            if (selectedVideo != null) {
-                currentPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                if (exoPlayer.duration > 0) {
-                    durationMs = exoPlayer.duration
-                }
-            }
-            delay(150L)
-        }
-    }
-
-    // Apply video URI + .ffx GPU effects cleanly with short debounce during slider drags
-    LaunchedEffect(selectedVideo?.uri, activePreset, bypassEffects) {
+    // Bind picked video URI
+    LaunchedEffect(selectedVideo?.uri) {
         val video = selectedVideo ?: return@LaunchedEffect
-        delay(140L)
-        val resumePos = if (exoPlayer.playbackState != Player.STATE_IDLE) {
-            exoPlayer.currentPosition.coerceAtLeast(0L)
-        } else {
-            0L
-        }
-        val wasPlaying = if (exoPlayer.playbackState == Player.STATE_IDLE) true else exoPlayer.playWhenReady
-        val effects = VideoEffectsEngine.buildPreviewVideoEffects(activePreset, bypassEffects)
-        val speed = if (bypassEffects) 1.0f else activePreset.speedMultiplier.toFloat().coerceIn(0.25f, 4.0f)
-
-        exoPlayer.stop()
-        exoPlayer.setVideoEffects(effects)
-        exoPlayer.setMediaItem(MediaItem.fromUri(video.uri), resumePos)
-        exoPlayer.setPlaybackSpeed(speed)
-        exoPlayer.playWhenReady = wasPlaying
+        exoPlayer.setMediaItem(MediaItem.fromUri(video.uri))
         exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
     }
 
-    Column(
+    // Re-apply GPU timeline effects whenever layers, bypass, or duration change
+    LaunchedEffect(layers, bypassEffects, clipDurationMs, selectedVideo?.uri) {
+        val effects = VideoEffectsEngine.buildPreviewEffectsForTimeline(
+            layers = layers,
+            clipDurationMs = clipDurationMs,
+            bypass = bypassEffects,
+        )
+        exoPlayer.setVideoEffects(effects)
+        val primaryVideo = layers.firstOrNull { it.kind == LayerKind.VIDEO }
+        val speed = ((primaryVideo?.speedMultiplier ?: 1f) * activePreset.speedMultiplier.toFloat())
+            .coerceIn(0.25f, 4.0f)
+        exoPlayer.setPlaybackSpeed(if (bypassEffects) 1.0f else speed)
+        exoPlayer.volume = if (primaryVideo?.isMuted == true) 0f else 1f
+    }
+
+    // Keep timeline playhead synced with ExoPlayer while playing
+    LaunchedEffect(isPlaying, selectedVideo?.uri) {
+        while (isPlaying && selectedVideo != null) {
+            onUpdatePlayhead(exoPlayer.currentPosition.coerceIn(0L, clipDurationMs))
+            delay(65L)
+        }
+    }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(ObsidianBackground)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp)
-            .padding(bottom = 24.dp),
     ) {
-        Spacer(modifier = Modifier.height(10.dp))
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 1. Alight Motion-inspired Top Bar (Screenshot 1 & 3)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ObsidianBackground)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = {
+                        if (selectedLayer != null) {
+                            onSelectLayer(null)
+                        } else {
+                            onNavigateBackHome()
+                        }
+                    },
+                    modifier = Modifier.minimumInteractiveComponentSize(),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = if (selectedLayer != null) "Deselect layer" else "Back to Projects",
+                        tint = Color.White,
+                    )
+                }
 
-        // Top Studio Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "PresetFX Studio",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-                Text(
-                    text = activePreset.fileName,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CyberCyan,
+                    text = selectedLayer?.title ?: projectTitle,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        textDecoration = if (selectedLayer == null) TextDecoration.Underline else TextDecoration.None
+                    ),
+                    color = Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = onPickVideo,
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    modifier = Modifier.testTag("pick_video_button"),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.VideoLibrary,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(stringResource(R.string.pick_video), style = MaterialTheme.typography.labelLarge)
-                }
-
-                Button(
-                    onClick = {
-                        onResetExportState()
-                        showExportSheet = true
-                    },
-                    enabled = selectedVideo != null,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ElectricViolet,
-                        contentColor = Color.White,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    modifier = Modifier.testTag("export_video_button"),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Download,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(stringResource(R.string.export_video), style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Live GPU Video Viewport
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(18.dp))
-                .background(ObsidianSurface)
-                .border(1.dp, OutlineSubtle, RoundedCornerShape(18.dp)),
-        ) {
-            if (selectedVideo == null) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_studio_hero_1794749939889),
-                    contentDescription = "Select a video to start editing",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    ObsidianBackground.copy(alpha = 0.25f),
-                                    ObsidianBackground.copy(alpha = 0.85f),
-                                )
-                            )
-                        )
-                        .padding(18.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "Load a Video to Preview .ffx Presets",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White,
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Real-time GPU effects preview & 4K/1080p local MP4 export",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = onPickVideo,
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricViolet),
-                                modifier = Modifier.testTag("viewport_pick_video_button"),
-                            ) {
-                                Icon(Icons.Filled.VideoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Select Video")
-                            }
-                            OutlinedButton(onClick = onImportFfx) {
-                                Icon(Icons.Filled.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Import .ffx")
-                            }
+                        .weight(1f)
+                        .clickable { showProjectSettingsDialog = true }
+                        .padding(horizontal = 6.dp),
+                )
+
+                if (selectedLayer != null) {
+                    IconButton(onClick = onDuplicateLayer) {
+                        Icon(Icons.Filled.FilterNone, contentDescription = "Duplicate layer", tint = Color.White)
+                    }
+                    if (selectedLayer.kind != LayerKind.VIDEO) {
+                        IconButton(onClick = onDeleteSelectedLayer) {
+                            Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete layer", tint = MaterialTheme.colorScheme.error)
                         }
                     }
+                } else {
+                    IconButton(
+                        onClick = { showProjectSettingsDialog = true },
+                        modifier = Modifier.minimumInteractiveComponentSize(),
+                    ) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Project Settings", tint = Color.White)
+                    }
+                    IconButton(
+                        onClick = {
+                            if (selectedVideo == null) {
+                                onPickVideo()
+                            } else {
+                                onResetExportState()
+                                showExportSheet = true
+                            }
+                        },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("export_video_button"),
+                    ) {
+                        Icon(Icons.Filled.IosShare, contentDescription = "Export Rendered Video", tint = LunaMint)
+                    }
                 }
-            } else {
-                AndroidView(
-                    factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = exoPlayer
-                            useController = false
-                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
+            }
+
+            // 2. Video Preview Canvas Viewport (Screenshots 1 & 3)
+            val displayRatio = if (viewportZoomed) 1f else aspectPreset.ratio
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(0.42f)
+                    .background(Color(0xFF040509)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .aspectRatio(displayRatio.coerceIn(0.55f, 1.85f), matchHeightConstraintsFirst = true)
+                        .padding(if (selectedLayer != null) 4.dp else 0.dp)
+                        .background(Color(0xFF0A0C14)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selectedVideo != null) {
+                        AndroidView(
+                            factory = { ctx ->
+                                PlayerView(ctx).apply {
+                                    useController = false
+                                    resizeMode = when (canvasFitMode) {
+                                        CanvasFitMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                        CanvasFitMode.FILL, CanvasFitMode.WIDE_CINEMA -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    }
+                                    layoutParams = FrameLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                    )
+                                    player = exoPlayer
+                                }
+                            },
+                            update = { pv ->
+                                pv.resizeMode = when (canvasFitMode) {
+                                    CanvasFitMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    CanvasFitMode.FILL, CanvasFitMode.WIDE_CINEMA -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(ObsidianSurfaceContainer)
+                                .border(1.dp, OutlineSubtle, RoundedCornerShape(16.dp))
+                                .clickable(onClick = onPickVideo)
+                                .padding(horizontal = 24.dp, vertical = 20.dp)
+                                .testTag("pick_video_button"),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.VideoLibrary,
+                                contentDescription = null,
+                                tint = LunaMint,
+                                modifier = Modifier.size(34.dp),
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Import Video Clip", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                            Text(
+                                text = "Tap to load video for .ffx & .cube grading",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                    },
-                    update = { view ->
-                        if (view.player !== exoPlayer) {
-                            view.player = exoPlayer
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                    }
 
-                // Active FX / Bypass badge overlay
-                Surface(
-                    color = ObsidianBackground.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(10.dp),
+                    // Selection corner handles overlay (Screenshot 3)
+                    if (selectedLayer != null) {
+                        SelectionBoundingHandles(modifier = Modifier.fillMaxSize())
+                    }
+                }
+
+                // Top-left Zoom toggle (Screenshots 1 & 3)
+                IconButton(
+                    onClick = { viewportZoomed = !viewportZoomed },
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(10.dp)
-                        .border(1.dp, if (bypassEffects) OutlineSubtle else CyberCyan.copy(alpha = 0.6f), RoundedCornerShape(10.dp)),
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(ObsidianSurface.copy(alpha = 0.72f))
+                        .size(34.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ZoomIn,
+                        contentDescription = "Toggle Canvas Zoom",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+
+                // Top-right Bypass / Original Compare pill
+                Surface(
+                    color = if (bypassEffects) LunaMintContainer else ObsidianSurface.copy(alpha = 0.78f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .clickable(onClick = onToggleBypass)
+                        .testTag("toggle_bypass_button"),
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(if (bypassEffects) MaterialTheme.colorScheme.onSurfaceVariant else CyberCyan),
+                        Icon(
+                            imageVector = Icons.Filled.Compare,
+                            contentDescription = "Toggle Original Bypass",
+                            tint = if (bypassEffects) LunaMint else Color.White,
+                            modifier = Modifier.size(15.dp),
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (bypassEffects) "ORIGINAL (FX BYPASSED)" else "FX: ${activePreset.name}",
+                            text = if (bypassEffects) "ORIGINAL" else activePreset.presetFormat,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (bypassEffects) MaterialTheme.colorScheme.onSurfaceVariant else CyberCyan,
+                            color = if (bypassEffects) LunaMint else CyberCyan,
                         )
                     }
                 }
-
-                Surface(
-                    color = ObsidianBackground.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(10.dp),
-                ) {
-                    Text(
-                        text = "${selectedVideo.width}x${selectedVideo.height}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                    )
-                }
             }
-        }
 
-        // Transport Controls Bar (when video is loaded)
-        if (selectedVideo != null) {
-            Spacer(modifier = Modifier.height(8.dp))
+            // 3. Transport & Quick-Action Toolbar (Screenshots 1 & 3)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(ObsidianSurfaceContainer)
-                    .border(1.dp, OutlineSubtle, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .background(ObsidianSurface)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(onClick = onUndo, enabled = canUndo, modifier = Modifier.testTag("toolbar_undo")) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Undo,
+                        contentDescription = "Undo",
+                        tint = if (canUndo) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                    )
+                }
+                IconButton(onClick = onRedo, enabled = canRedo, modifier = Modifier.testTag("toolbar_redo")) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Redo,
+                        contentDescription = "Redo",
+                        tint = if (canRedo) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                    )
+                }
                 IconButton(
                     onClick = {
-                        if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                        onUpdatePlayhead(0L)
+                        if (selectedVideo != null) exoPlayer.seekTo(0L)
                     },
-                    modifier = Modifier.minimumInteractiveComponentSize(),
+                ) {
+                    Icon(Icons.Filled.FastRewind, contentDescription = "Jump to Start", tint = Color.White)
+                }
+                IconButton(
+                    onClick = {
+                        if (selectedVideo == null) {
+                            onPickVideo()
+                        } else if (exoPlayer.isPlaying) {
+                            exoPlayer.pause()
+                        } else {
+                            exoPlayer.play()
+                        }
+                    },
+                    modifier = Modifier.testTag("play_pause_button"),
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "Pause preview" else "Play preview",
-                        tint = CyberCyan,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp),
                     )
                 }
+                IconButton(
+                    onClick = {
+                        onUpdatePlayhead(clipDurationMs)
+                        if (selectedVideo != null) exoPlayer.seekTo(clipDurationMs)
+                    },
+                ) {
+                    Icon(Icons.Filled.FastForward, contentDescription = "Jump to End", tint = Color.White)
+                }
+                IconButton(onClick = onDuplicateLayer, modifier = Modifier.testTag("toolbar_duplicate")) {
+                    Icon(Icons.Filled.FileCopy, contentDescription = "Duplicate Layer", tint = Color.White)
+                }
+                IconButton(onClick = onCycleCanvasFit, modifier = Modifier.testTag("toolbar_fit")) {
+                    Icon(Icons.Filled.CropFree, contentDescription = "Cycle Fit Fill Frame", tint = Color.White)
+                }
+            }
 
-                Slider(
-                    value = if (durationMs > 0) (currentPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f,
-                    onValueChange = { fraction ->
-                        if (durationMs > 0) {
-                            val target = (fraction * durationMs).toLong()
-                            currentPosMs = target
-                            exoPlayer.seekTo(target)
+            // 4. Multi-Track Timeline Section (Screenshots 1 & 3)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(if (selectedLayer != null || showAddLayerDrawer) 0.22f else 0.58f)
+                    .background(ObsidianBackground)
+                    .pointerInput(clipDurationMs) {
+                        detectHorizontalDragGestures { _, dragAmount ->
+                            val deltaMs = (-dragAmount * 14f).toLong()
+                            val next = (playheadMs + deltaMs).coerceIn(0L, clipDurationMs)
+                            onUpdatePlayhead(next)
+                            if (selectedVideo != null) {
+                                exoPlayer.seekTo(next)
+                            }
                         }
                     },
-                    colors = SliderDefaults.colors(
-                        thumbColor = CyberCyan,
-                        activeTrackColor = CyberCyan,
-                        inactiveTrackColor = ObsidianSurfaceHigh,
-                    ),
-                    modifier = Modifier.weight(1f),
-                )
-
-                Text(
-                    text = "${formatTimecode(currentPosMs)}/${formatTimecode(durationMs)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 6.dp),
-                )
-
-                IconButton(
-                    onClick = onToggleBypass,
-                    modifier = Modifier.minimumInteractiveComponentSize(),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Compare,
-                        contentDescription = "Toggle Original vs FX",
-                        tint = if (bypassEffects) MaterialTheme.colorScheme.onSurfaceVariant else ElectricViolet,
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // Quick .ffx Preset Strip
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Quick .ffx Presets",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            TextButton(onClick = onImportFfx) {
-                Icon(Icons.Filled.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp), tint = CyberCyan)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Import .ffx", color = CyberCyan, style = MaterialTheme.typography.labelLarge)
-            }
-        }
-
-        val cloudPresets = (presetsState as? UiState.Success)?.data.orEmpty()
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(vertical = 4.dp),
-        ) {
-            items(cloudPresets, key = { it.id }) { preset ->
-                val isSelected = preset.id == activePreset.id
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (isSelected) DeepCyanContainer else ObsidianSurfaceContainer)
-                        .border(
-                            1.2.dp,
-                            if (isSelected) CyberCyan else OutlineSubtle,
-                            RoundedCornerShape(12.dp),
-                        )
-                        .clickable { onSelectPreset(preset) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.AutoFixHigh,
-                        contentDescription = null,
-                        tint = if (isSelected) CyberCyan else ElectricViolet,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = preset.name,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (isSelected) CyberCyan else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // Parameter Inspector Card
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(ObsidianSurfaceContainer)
-                .border(1.dp, OutlineSubtle, RoundedCornerShape(18.dp))
-                .padding(14.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    text = ".ffx Effect Stack",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    IconButton(
-                        onClick = onResetPreset,
-                        modifier = Modifier.minimumInteractiveComponentSize(),
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Tick Ruler + Timecode Badge (Screenshots 1 & 3)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(34.dp)
+                            .background(ObsidianSurface),
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = "Reset sliders",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        TimelineRulerCanvas(
+                            playheadMs = playheadMs,
+                            clipDurationMs = clipDurationMs,
+                            modifier = Modifier.fillMaxSize(),
                         )
-                    }
-                    IconButton(
-                        onClick = { onSavePresetToCloud(false, null) },
-                        modifier = Modifier.minimumInteractiveComponentSize(),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Save,
-                            contentDescription = "Update preset in cloud",
-                            tint = CyberCyan,
-                        )
-                    }
-                    IconButton(
-                        onClick = { showSaveAsDialog = true },
-                        modifier = Modifier.minimumInteractiveComponentSize(),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.AddCircleOutline,
-                            contentDescription = "Save as new cloud .ffx preset",
-                            tint = ElectricViolet,
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                InspectorGroup.entries.forEach { group ->
-                    val selected = inspectorGroup == group
-                    FilterChip(
-                        selected = selected,
-                        onClick = { inspectorGroup = group },
-                        label = {
+                        Surface(
+                            color = ObsidianSurfaceHigh,
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                        ) {
                             Text(
-                                text = group.label,
-                                style = MaterialTheme.typography.labelLarge,
+                                text = formatTimecode(playheadMs),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                             )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = DeepVioletContainer,
-                            selectedLabelColor = Color.White,
-                        ),
-                        modifier = Modifier.weight(1f),
-                    )
+                        }
+                    }
+
+                    // Tracks List
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(top = 6.dp, bottom = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        items(layers, key = { it.id }) { layer ->
+                            TimelineTrackRow(
+                                layer = layer,
+                                clipDurationMs = clipDurationMs,
+                                isSelected = layer.id == selectedLayerId,
+                                onToggleVisibility = { onToggleLayerVisibility(layer.id) },
+                                onSelect = { onSelectLayer(layer.id) },
+                            )
+                        }
+                    }
                 }
+
+                // Centered White Playhead Vertical Line
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .width(1.6.dp)
+                        .fillMaxHeight()
+                        .background(Color.White.copy(alpha = 0.9f)),
+                )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            when (inspectorGroup) {
-                InspectorGroup.COLOR -> {
-                    FxParameterSlider(
-                        label = "Exposure",
-                        value = activePreset.exposure.toFloat(),
-                        range = -0.8f..0.8f,
-                        valueText = String.format(Locale.US, "%+.2f", activePreset.exposure),
-                        onValueChange = { v -> onUpdatePreset { it.copy(exposure = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Contrast",
-                        value = activePreset.contrast.toFloat(),
-                        range = -0.8f..0.8f,
-                        valueText = String.format(Locale.US, "%+.2f", activePreset.contrast),
-                        onValueChange = { v -> onUpdatePreset { it.copy(contrast = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Saturation",
-                        value = activePreset.saturation.toFloat(),
-                        range = -100f..100f,
-                        valueText = String.format(Locale.US, "%+.0f", activePreset.saturation),
-                        onValueChange = { v -> onUpdatePreset { it.copy(saturation = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Hue Shift",
-                        value = activePreset.hueShift.toFloat(),
-                        range = -180f..180f,
-                        valueText = String.format(Locale.US, "%+.0f°", activePreset.hueShift),
-                        onValueChange = { v -> onUpdatePreset { it.copy(hueShift = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Temperature",
-                        value = activePreset.temperature.toFloat(),
-                        range = -1f..1f,
-                        valueText = String.format(Locale.US, "%+.2f", activePreset.temperature),
-                        onValueChange = { v -> onUpdatePreset { it.copy(temperature = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Tint",
-                        value = activePreset.tint.toFloat(),
-                        range = -1f..1f,
-                        valueText = String.format(Locale.US, "%+.2f", activePreset.tint),
-                        onValueChange = { v -> onUpdatePreset { it.copy(tint = v.toDouble()) } },
-                    )
-                }
-
-                InspectorGroup.OPTICS -> {
-                    FxParameterSlider(
-                        label = "Halation Glow",
-                        value = activePreset.glowIntensity.toFloat(),
-                        range = 0f..1f,
-                        valueText = "${(activePreset.glowIntensity * 100).toInt()}%",
-                        onValueChange = { v -> onUpdatePreset { it.copy(glowIntensity = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Optical Vignette",
-                        value = activePreset.vignetteIntensity.toFloat(),
-                        range = 0f..1f,
-                        valueText = "${(activePreset.vignetteIntensity * 100).toInt()}%",
-                        onValueChange = { v -> onUpdatePreset { it.copy(vignetteIntensity = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Film Grain (16mm)",
-                        value = activePreset.grainAmount.toFloat(),
-                        range = 0f..1f,
-                        valueText = "${(activePreset.grainAmount * 100).toInt()}%",
-                        onValueChange = { v -> onUpdatePreset { it.copy(grainAmount = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Anamorphic Letterbox",
-                        value = activePreset.letterboxRatio.toFloat(),
-                        range = 0f..0.35f,
-                        valueText = "${(activePreset.letterboxRatio * 100).toInt()}%",
-                        onValueChange = { v -> onUpdatePreset { it.copy(letterboxRatio = v.toDouble()) } },
-                    )
-                }
-
-                InspectorGroup.MOTION -> {
-                    FxParameterSlider(
-                        label = "Zoom Pulse",
-                        value = activePreset.zoomPulse.toFloat(),
-                        range = 0f..1f,
-                        valueText = "${(activePreset.zoomPulse * 100).toInt()}%",
-                        onValueChange = { v -> onUpdatePreset { it.copy(zoomPulse = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Camera Shake (Wiggle)",
-                        value = activePreset.shakeIntensity.toFloat(),
-                        range = 0f..1f,
-                        valueText = "${(activePreset.shakeIntensity * 100).toInt()}%",
-                        onValueChange = { v -> onUpdatePreset { it.copy(shakeIntensity = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Rotation Angle",
-                        value = activePreset.rotationDegrees.toFloat(),
-                        range = -180f..180f,
-                        valueText = String.format(Locale.US, "%+.0f°", activePreset.rotationDegrees),
-                        onValueChange = { v -> onUpdatePreset { it.copy(rotationDegrees = v.toDouble()) } },
-                    )
-                    FxParameterSlider(
-                        label = "Timewarp Speed",
-                        value = activePreset.speedMultiplier.toFloat(),
-                        range = 0.25f..2.5f,
-                        valueText = String.format(Locale.US, "%.2fx", activePreset.speedMultiplier),
-                        onValueChange = { v -> onUpdatePreset { it.copy(speedMultiplier = v.toDouble()) } },
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Button(
-                onClick = { onSavePresetToCloud(false, null) },
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = DeepVioletContainer),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Filled.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.save_to_cloud), style = MaterialTheme.typography.labelLarge)
+            // 5. Contextual Bottom Area: Selected Layer Tool Grid (Screenshot 3) OR Add Layer Drawer (Screenshot 4)
+            if (showAddLayerDrawer) {
+                AddLayerDrawer(
+                    presets = presetsList,
+                    onClose = { showAddLayerDrawer = false },
+                    onPickVideo = onPickVideo,
+                    onImportFfx = onImportFfx,
+                    onAddPresetLayer = onAddPresetLayer,
+                    onAddShapeLayer = onAddShapeLayer,
+                    onAddTextLayer = onAddTextLayer,
+                )
+            } else if (selectedLayer != null) {
+                SelectedLayerToolGrid(
+                    layer = selectedLayer,
+                    onOpenPanel = { panel -> activeToolPanel = panel },
+                    onTrimLeft = onTrimLeft,
+                    onSplit = onSplit,
+                    onTrimRight = onTrimRight,
+                    onToggleMute = onToggleMute,
+                    onToggleBorderShadow = onToggleBorderShadow,
+                )
             }
         }
+
+        // Mint-green '+' FAB on bottom right when in timeline overview mode (Screenshot 1)
+        if (selectedLayer == null && !showAddLayerDrawer) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (selectedVideo != null) {
+                    Surface(
+                        color = ObsidianSurfaceContainer,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .border(1.dp, OutlineSubtle, RoundedCornerShape(14.dp))
+                            .clickable {
+                                onResetExportState()
+                                showExportSheet = true
+                            },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Filled.Download, contentDescription = null, tint = CyberCyan, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Render MP4", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                        }
+                    }
+                }
+                FloatingActionButton(
+                    onClick = { showAddLayerDrawer = true },
+                    shape = CircleShape,
+                    containerColor = ObsidianSurface,
+                    contentColor = LunaMint,
+                    modifier = Modifier
+                        .size(56.dp)
+                        .border(2.5.dp, LunaMint, CircleShape)
+                        .testTag("add_layer_fab"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Add Layer or Preset",
+                        tint = LunaMint,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    if (selectedLayer != null && activeToolPanel != LayerToolPanel.NONE) {
+        LayerToolPanelDialog(
+            panel = activeToolPanel,
+            layer = selectedLayer,
+            presets = presetsList,
+            onDismiss = { activeToolPanel = LayerToolPanel.NONE },
+            onSetSpeed = onSetSpeed,
+            onSetColor = onSetColor,
+            onSetBlendOpacity = onSetBlendOpacity,
+            onUpdateTransform = onUpdateTransform,
+            onUpdateShapeOrText = onUpdateShapeOrText,
+            onApplyPresetToLayer = { preset -> onSelectPreset(preset) },
+            onImportFfx = onImportFfx,
+        )
+    }
+
+    if (showProjectSettingsDialog) {
+        ProjectSettingsDialog(
+            initialTitle = projectTitle,
+            initialAspect = aspectPreset,
+            initialResolution = projectResolution,
+            initialFps = projectFps,
+            onDismiss = { showProjectSettingsDialog = false },
+            onSave = { t, a, r, f ->
+                onUpdateProjectSettings(t, a, r, f)
+                showProjectSettingsDialog = false
+            },
+        )
     }
 
     if (showExportSheet && selectedVideo != null) {
@@ -735,84 +687,245 @@ fun StudioScreen(
             onDismiss = { showExportSheet = false },
         )
     }
+}
 
-    if (showSaveAsDialog) {
-        var newName by remember { mutableStateOf("${activePreset.name} Remix") }
-        AlertDialog(
-            onDismissRequest = { showSaveAsDialog = false },
-            containerColor = ObsidianSurfaceHigh,
-            title = { Text("Save as New Cloud .ffx Preset", style = MaterialTheme.typography.titleLarge) },
-            text = {
-                OutlinedTextField(
-                    value = newName,
-                    onValueChange = { newName = it },
-                    label = { Text("Preset Name") },
-                    singleLine = true,
+@Composable
+private fun TimelineTrackRow(
+    layer: TimelineLayer,
+    clipDurationMs: Long,
+    isSelected: Boolean,
+    onToggleVisibility: () -> Unit,
+    onSelect: () -> Unit,
+) {
+    val barColor = Color(layer.accentColorHex)
+    val safeDur = clipDurationMs.coerceAtLeast(1_000L).toFloat()
+    val startFraction = (layer.startMs / safeDur).coerceIn(0f, 0.9f)
+    val endFraction = (layer.endMs / safeDur).coerceIn(startFraction + 0.08f, 1f)
+    val widthFraction = (endFraction - startFraction).coerceIn(0.12f, 1f)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(38.dp)
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Left sticky eye visibility + layer badge (Screenshots 1 & 3)
+        Row(
+            modifier = Modifier
+                .width(68.dp)
+                .height(34.dp)
+                .clip(RoundedCornerShape(17.dp))
+                .background(ObsidianSurfaceContainer)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Icon(
+                imageVector = if (layer.isVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                contentDescription = if (layer.isVisible) "Hide layer" else "Show layer",
+                tint = if (layer.isVisible) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .clickable(onClick = onToggleVisibility),
+            )
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(barColor.copy(alpha = if (layer.isVisible) 1f else 0.35f)),
+            )
+        }
+
+        if (isSelected) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(ObsidianSurfaceHigh)
+                    .clickable(onClick = onSelect),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Deselect layer", tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // Track timeline bar positioned by [startMs..endMs]
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(widthFraction)
+                    .offset { IntOffset((startFraction * 180f).roundToInt(), 0) }
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(barColor.copy(alpha = if (layer.isVisible) 0.92f else 0.35f))
+                    .border(
+                        width = if (isSelected) 2.dp else 0.dp,
+                        color = if (isSelected) Color.White else Color.Transparent,
+                        shape = RoundedCornerShape(6.dp),
+                    )
+                    .clickable(onClick = onSelect)
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onSavePresetToCloud(true, newName)
-                        showSaveAsDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ElectricViolet),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Save to Cloud")
+                    Text(
+                        text = layer.title,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (layer.kind == LayerKind.VIDEO) Color.White else ObsidianBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Menu,
+                        contentDescription = null,
+                        tint = if (layer.kind == LayerKind.VIDEO) Color.White.copy(alpha = 0.7f) else ObsidianBackground.copy(alpha = 0.75f),
+                        modifier = Modifier.size(14.dp),
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSaveAsDialog = false }) {
-                    Text("Cancel")
-                }
-            },
-        )
+            }
+        }
     }
 }
 
 @Composable
-private fun FxParameterSlider(
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    valueText: String,
-    onValueChange: (Float) -> Unit,
+private fun TimelineRulerCanvas(
+    playheadMs: Long,
+    clipDurationMs: Long,
+    modifier: Modifier = Modifier,
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = valueText,
-                style = MaterialTheme.typography.labelMedium,
-                color = CyberCyan,
-            )
+    Canvas(modifier = modifier) {
+        val centerX = size.width * 0.5f
+        val offsetRatio = (playheadMs.toFloat() / clipDurationMs.coerceAtLeast(1L).toFloat())
+        val shift = -(offsetRatio * size.width * 0.4f)
+        val tickStep = 14.dp.toPx()
+        var idx = -20
+        while (idx <= 45) {
+            val x = centerX + shift + idx * tickStep
+            if (x in 0f..size.width) {
+                val isMajor = idx % 5 == 0
+                drawLine(
+                    color = Color.White.copy(alpha = if (isMajor) 0.65f else 0.25f),
+                    start = Offset(x, size.height - if (isMajor) 14.dp.toPx() else 7.dp.toPx()),
+                    end = Offset(x, size.height),
+                    strokeWidth = 1.dp.toPx(),
+                )
+            }
+            idx++
         }
-        Slider(
-            value = value.coerceIn(range.start, range.endInclusive),
-            onValueChange = onValueChange,
-            valueRange = range,
-            colors = SliderDefaults.colors(
-                thumbColor = ElectricViolet,
-                activeTrackColor = ElectricViolet,
-                inactiveTrackColor = ObsidianSurfaceHigh,
-            ),
-        )
     }
 }
 
+@Composable
+private fun SelectionBoundingHandles(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val strokeColor = Color.White.copy(alpha = 0.9f)
+        drawRect(
+            color = strokeColor,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5.dp.toPx()),
+        )
+        val r = 4.dp.toPx()
+        val points = listOf(
+            Offset(0f, 0f),
+            Offset(size.width * 0.5f, 0f),
+            Offset(size.width, 0f),
+            Offset(0f, size.height * 0.5f),
+            Offset(size.width, size.height * 0.5f),
+            Offset(0f, size.height),
+            Offset(size.width * 0.5f, size.height),
+            Offset(size.width, size.height),
+        )
+        points.forEach { p ->
+            drawCircle(color = Color.White, radius = r, center = p)
+        }
+    }
+}
+
+@Composable
+private fun ProjectSettingsDialog(
+    initialTitle: String,
+    initialAspect: AspectPreset,
+    initialResolution: String,
+    initialFps: Int,
+    onDismiss: () -> Unit,
+    onSave: (String, AspectPreset, String, Int) -> Unit,
+) {
+    var title by remember { mutableStateOf(initialTitle) }
+    var aspect by remember { mutableStateOf(initialAspect) }
+    var res by remember { mutableStateOf(initialResolution) }
+    var fps by remember { mutableIntStateOf(initialFps) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianSurfaceHigh,
+        title = { Text("Project Settings", style = MaterialTheme.typography.titleLarge) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Project Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Canvas Ratio", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    AspectPreset.entries.forEach { ratio ->
+                        FilterChip(
+                            selected = aspect == ratio,
+                            onClick = { aspect = ratio },
+                            label = { Text(ratio.label, style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = LunaMintContainer,
+                                selectedLabelColor = LunaMint,
+                            ),
+                        )
+                    }
+                }
+                Text("Preview & Frame Rate", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("720p", "1080p", "1440p", "4K").forEach { r ->
+                        FilterChip(selected = res == r, onClick = { res = r }, label = { Text(r, style = MaterialTheme.typography.labelSmall) })
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(30, 60).forEach { f ->
+                        FilterChip(selected = fps == f, onClick = { fps = f }, label = { Text("${f}fps") })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(title, aspect, res, fps) },
+                colors = ButtonDefaults.buttonColors(containerColor = LunaMint, contentColor = ObsidianBackground),
+            ) {
+                Text("Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
 private fun formatTimecode(ms: Long): String {
-    val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
-    val mins = totalSeconds / 60L
-    val secs = totalSeconds % 60L
-    val tenths = (ms % 1000L) / 100L
-    return String.format(Locale.US, "%02d:%02d.%d", mins, secs, tenths)
+    val safe = ms.coerceAtLeast(0L)
+    val totalSec = safe / 1000L
+    val mins = totalSec / 60L
+    val secs = totalSec % 60L
+    val frames = ((safe % 1000L) * 30L / 1000L).coerceIn(0L, 29L)
+    return String.format(Locale.US, "%02d:%02d:%02d", mins, secs, frames)
 }

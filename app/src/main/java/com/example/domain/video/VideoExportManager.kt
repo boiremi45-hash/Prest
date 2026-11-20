@@ -10,7 +10,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
-import androidx.core.content.FileProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.audio.SpeedProvider
 import androidx.media3.common.util.UnstableApi
@@ -24,6 +23,8 @@ import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
 import com.example.data.model.ExportRecord
 import com.example.data.model.FfxPreset
+import com.example.data.model.LayerKind
+import com.example.data.model.TimelineLayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -31,6 +32,7 @@ import java.io.FileInputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 @UnstableApi
 class VideoExportManager(private val context: Context) {
@@ -41,7 +43,9 @@ class VideoExportManager(private val context: Context) {
 
     fun startExport(
         sourceUri: Uri,
-        preset: FfxPreset,
+        clipDurationMs: Long,
+        layers: List<TimelineLayer>,
+        activePreset: FfxPreset,
         config: ExportConfig,
         onProgress: (Int) -> Unit,
         onSuccess: (ExportRecord, savedLocationLabel: String) -> Unit,
@@ -52,7 +56,7 @@ class VideoExportManager(private val context: Context) {
         val safeBase = config.fileName
             .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
             .trim('_')
-            .ifBlank { "PresetFX_Render" }
+            .ifBlank { "LUNA_Render" }
         val timestampTag = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val finalFileName = "${safeBase}_$timestampTag.mp4"
 
@@ -60,19 +64,38 @@ class VideoExportManager(private val context: Context) {
         val tempFile = File(exportDir, finalFileName)
         if (tempFile.exists()) tempFile.delete()
 
-        val effects = VideoEffectsEngine.buildExportEffects(
-            preset = preset,
+        val effects = VideoEffectsEngine.buildExportEffectsForTimeline(
+            layers = layers,
+            clipDurationMs = clipDurationMs,
             targetHeight = config.resolution.targetHeight,
         )
 
-        val itemBuilder = EditedMediaItem.Builder(MediaItem.fromUri(sourceUri))
-            .setRemoveAudio(config.removeAudio)
+        val videoLayer = layers.firstOrNull { it.kind == LayerKind.VIDEO && it.isVisible }
+        val muteAudio = config.removeAudio || (videoLayer?.isMuted == true)
+
+        val mediaItemBuilder = MediaItem.Builder().setUri(sourceUri)
+        if (videoLayer != null && clipDurationMs > 0L &&
+            (videoLayer.startMs > 50L || videoLayer.endMs < clipDurationMs - 50L) &&
+            videoLayer.endMs > videoLayer.startMs
+        ) {
+            mediaItemBuilder.setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(videoLayer.startMs.coerceAtLeast(0L))
+                    .setEndPositionMs(videoLayer.endMs.coerceAtMost(clipDurationMs))
+                    .build()
+            )
+        }
+
+        val itemBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
+            .setRemoveAudio(muteAudio)
             .setEffects(effects)
 
-        val speed = preset.speedMultiplier.toFloat().coerceIn(0.25f, 4.0f)
-        if (kotlin.math.abs(speed - 1.0f) > 0.02f) {
+        val layerSpeed = videoLayer?.speedMultiplier ?: 1.0f
+        val presetSpeed = activePreset.speedMultiplier.toFloat()
+        val combinedSpeed = (layerSpeed * presetSpeed).coerceIn(0.25f, 4.0f)
+        if (abs(combinedSpeed - 1.0f) > 0.02f) {
             itemBuilder.setSpeed(object : SpeedProvider {
-                override fun getSpeed(presentationTimeUs: Long): Float = speed
+                override fun getSpeed(presentationTimeUs: Long): Float = combinedSpeed
                 override fun getNextSpeedChangeTimeUs(inputTimeUs: Long): Long = Long.MAX_VALUE
             })
         }
@@ -98,7 +121,7 @@ class VideoExportManager(private val context: Context) {
                     persistToLocalDrive(
                         tempFile = tempFile,
                         finalFileName = finalFileName,
-                        preset = preset,
+                        preset = activePreset,
                         config = config,
                         exportResult = exportResult,
                         onSuccess = onSuccess,
@@ -169,14 +192,14 @@ class VideoExportManager(private val context: Context) {
                         put(MediaStore.Downloads.MIME_TYPE, "video/mp4")
                         put(
                             MediaStore.Downloads.RELATIVE_PATH,
-                            "${Environment.DIRECTORY_DOWNLOADS}/PresetFX"
+                            "${Environment.DIRECTORY_DOWNLOADS}/LUNA"
                         )
                         put(MediaStore.Downloads.IS_PENDING, 1)
                     }
                     val resolver = context.contentResolver
                     val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                     val itemUri = resolver.insert(collection, values)
-                        ?: throw IllegalStateException("Unable to create file in Downloads/PresetFX.")
+                        ?: throw IllegalStateException("Unable to create file in Downloads/LUNA.")
 
                     resolver.openOutputStream(itemUri)?.use { out ->
                         FileInputStream(tempFile).use { input ->
@@ -189,7 +212,7 @@ class VideoExportManager(private val context: Context) {
                     }
                     resolver.update(itemUri, completeValues, null, null)
                     tempFile.delete()
-                    itemUri to "Downloads/PresetFX/$finalFileName"
+                    itemUri to "Downloads/LUNA/$finalFileName"
                 } else {
                     val moviesDir = context.getExternalFilesDir(Environment.DIRECTORY_MOVIES)
                         ?: context.filesDir
@@ -200,7 +223,7 @@ class VideoExportManager(private val context: Context) {
                 }
 
                 val record = ExportRecord(
-                    presetId = preset.id.ifBlank { "studio_working" },
+                    presetId = preset.id.ifBlank { "luna_timeline" },
                     presetName = preset.name,
                     outputFileName = finalFileName,
                     resolutionLabel = config.resolution.label,
