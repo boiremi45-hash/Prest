@@ -132,19 +132,27 @@ fun LunaApp() {
     val presetsState by viewModel.presetsState.collectAsStateWithLifecycle()
     val exportsState by viewModel.exportsState.collectAsStateWithLifecycle()
     val selectedVideo by viewModel.selectedVideo.collectAsStateWithLifecycle()
+    val filmstrip by viewModel.filmstripThumbnails.collectAsStateWithLifecycle()
+    val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
     val activePreset by viewModel.activePreset.collectAsStateWithLifecycle()
     val bypassEffects by viewModel.bypassEffects.collectAsStateWithLifecycle()
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
-    val projectTitle by viewModel.projectTitle.collectAsStateWithLifecycle()
     val aspectPreset by viewModel.aspectPreset.collectAsStateWithLifecycle()
     val projectResolution by viewModel.projectResolution.collectAsStateWithLifecycle()
     val projectFps by viewModel.projectFps.collectAsStateWithLifecycle()
     val canvasFitMode by viewModel.canvasFitMode.collectAsStateWithLifecycle()
-    val layers by viewModel.layers.collectAsStateWithLifecycle()
-    val selectedLayerId by viewModel.selectedLayerId.collectAsStateWithLifecycle()
+    val selectedClipId by viewModel.selectedClipId.collectAsStateWithLifecycle()
+    val selectedOverlayId by viewModel.selectedOverlayId.collectAsStateWithLifecycle()
+    val selectedEffectId by viewModel.selectedEffectId.collectAsStateWithLifecycle()
+    val selectedTextId by viewModel.selectedTextId.collectAsStateWithLifecycle()
+    val selectedAudioId by viewModel.selectedAudioId.collectAsStateWithLifecycle()
+    val keyframeModeEnabled by viewModel.keyframeModeEnabled.collectAsStateWithLifecycle()
+    val selectedKeyframeId by viewModel.selectedKeyframeId.collectAsStateWithLifecycle()
+    val selectedVolumeKeyframeId by viewModel.selectedVolumeKeyframeId.collectAsStateWithLifecycle()
     val playheadMs by viewModel.playheadMs.collectAsStateWithLifecycle()
+    val timelineZoom by viewModel.timelineZoom.collectAsStateWithLifecycle()
     val canUndo by viewModel.canUndo.collectAsStateWithLifecycle()
     val canRedo by viewModel.canRedo.collectAsStateWithLifecycle()
     val recentProjects by viewModel.recentProjects.collectAsStateWithLifecycle()
@@ -208,6 +216,29 @@ fun LunaApp() {
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri -> if (uri != null) viewModel.selectVideo(context, uri) },
+    )
+    val appendClipLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri -> if (uri != null) viewModel.selectVideo(context, uri, appendNew = true) },
+    )
+    val replaceClipLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri -> if (uri != null) viewModel.selectVideo(context, uri, replaceSelectedClip = true) },
+    )
+    val overlayPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri ->
+            if (uri != null) {
+                val mime = context.contentResolver.getType(uri).orEmpty()
+                viewModel.addOverlayMedia(context, uri, isVideo = mime.startsWith("video"))
+            }
+        },
+    )
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri ->
+            if (uri != null) viewModel.addAudioTrack(context, uri)
+        },
     )
 
     val ffxImportLauncher = rememberLauncherForActivityResult(
@@ -325,54 +356,144 @@ fun LunaApp() {
                     }
 
                     composable<EditorRoute> {
+                        val spans = remember(snapshot.clips) { viewModel.clipSpans() }
+                        val totalDurationMs = remember(snapshot) { viewModel.totalTimelineDurationMs() }
                         StudioScreen(
-                            projectTitle = projectTitle,
+                            snapshot = snapshot,
+                            spans = spans,
                             aspectPreset = aspectPreset,
                             projectResolution = projectResolution,
                             projectFps = projectFps,
                             canvasFitMode = canvasFitMode,
                             selectedVideo = selectedVideo,
-                            activePreset = activePreset,
-                            layers = layers,
-                            selectedLayerId = selectedLayerId,
+                            filmstrip = filmstrip,
+                            selectedClipId = selectedClipId,
+                            selectedOverlayId = selectedOverlayId,
+                            selectedEffectId = selectedEffectId,
+                            selectedTextId = selectedTextId,
+                            selectedAudioId = selectedAudioId,
+                            keyframeModeEnabled = keyframeModeEnabled,
+                            selectedKeyframeId = selectedKeyframeId,
+                            selectedVolumeKeyframeId = selectedVolumeKeyframeId,
                             playheadMs = playheadMs,
+                            totalDurationMs = totalDurationMs,
+                            timelineZoom = timelineZoom,
                             canUndo = canUndo,
                             canRedo = canRedo,
                             bypassEffects = bypassEffects,
                             presetsState = presetsState,
                             exportState = exportState,
                             onNavigateBackHome = { navigateTop(HomeRoute) },
-                            onUpdateProjectSettings = { t, a, r, f ->
-                                viewModel.updateProjectSettings(t, a, r, f)
-                            },
                             onPickVideo = {
                                 videoPickerLauncher.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                                 )
                             },
-                            onImportFfx = { ffxImportLauncher.launch(arrayOf("*/*")) },
-                            onSelectPreset = { viewModel.applyPreset(it) },
-                            onAddPresetLayer = { viewModel.addPresetLayer(it) },
-                            onAddShapeLayer = { viewModel.addShapeLayer(it) },
-                            onAddTextLayer = { viewModel.addTextLayer(it) },
-                            onSelectLayer = { viewModel.selectLayer(it) },
-                            onToggleLayerVisibility = { viewModel.toggleLayerVisibility(it) },
+                            onAppendVideoClip = {
+                                appendClipLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                )
+                            },
+                            onReplaceClipVideo = {
+                                replaceClipLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                )
+                            },
+                            onPickOverlayMedia = {
+                                overlayPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                )
+                            },
+                            onPickAudioFile = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                            onImportFfxOrCube = { ffxImportLauncher.launch(arrayOf("*/*")) },
+                            onSelectClip = { viewModel.selectClip(it) },
+                            onSelectOverlay = { viewModel.selectOverlay(it) },
+                            onSelectEffectLayer = { viewModel.selectEffectLayer(it) },
+                            onSelectText = { viewModel.selectTextTrack(it) },
+                            onSelectAudio = { viewModel.selectAudioTrack(it) },
+                            onSelectClipKeyframe = { cid, kfid -> viewModel.selectClipKeyframe(cid, kfid) },
+                            onSelectTextKeyframe = { tid, kfid -> viewModel.selectTextKeyframe(tid, kfid) },
+                            onSelectClipVolumeKeyframe = { cid, kfid -> viewModel.selectClipVolumeKeyframe(cid, kfid) },
+                            onSelectAudioVolumeKeyframe = { aid, kfid -> viewModel.selectAudioVolumeKeyframe(aid, kfid) },
+                            onClearAllSelections = { viewModel.clearAllTrackSelections() },
+                            onCommitHistory = { viewModel.commitTimelineHistory() },
                             onUpdatePlayhead = { viewModel.updatePlayhead(it) },
+                            onUpdateZoom = { viewModel.updateTimelineZoom(it) },
                             onUndo = { viewModel.undo() },
                             onRedo = { viewModel.redo() },
-                            onDuplicateLayer = { viewModel.duplicateSelectedLayer() },
-                            onDeleteSelectedLayer = { viewModel.deleteSelectedLayer() },
+                            onSplitClip = { viewModel.splitSelectedOrActiveClip() },
+                            onMoveClip = { cid, delta -> viewModel.moveVideoClip(cid, delta) },
+                            onMoveOverlay = { oid, delta -> viewModel.moveOverlay(oid, delta) },
+                            onMoveEffect = { eid, delta -> viewModel.moveEffectLayer(eid, delta) },
+                            onMoveText = { tid, delta -> viewModel.moveTextTrack(tid, delta) },
+                            onMoveAudio = { aid, delta -> viewModel.moveAudioTrack(aid, delta) },
+                            onTrimClipEdge = { cid, isStart, delta -> viewModel.trimClipEdge(cid, isStart, delta) },
+                            onTrimOverlayEdge = { oid, isStart, delta -> viewModel.trimOverlayEdge(oid, isStart, delta) },
+                            onTrimEffectEdge = { eid, isStart, delta -> viewModel.trimEffectEdge(eid, isStart, delta) },
+                            onTrimTextEdge = { tid, isStart, delta -> viewModel.trimTextEdge(tid, isStart, delta) },
+                            onTrimAudioEdge = { aid, isStart, delta -> viewModel.trimAudioEdge(aid, isStart, delta) },
+                            onDuplicateClip = { viewModel.duplicateSelectedClip() },
+                            onDeleteClip = { viewModel.deleteSelectedClip() },
+                            onFreezeClip = { viewModel.freezeSelectedClipAtPlayhead() },
+                            onReverseClip = { viewModel.toggleReverseSelectedClip() },
+                            onMoveClipToOverlay = { viewModel.demoteSelectedClipToOverlay() },
+                            onToggleMuteClip = { viewModel.toggleMuteClip(it) },
+                            onToggleBeat = { viewModel.toggleBeatAtPlayhead() },
+                            onUpdateVolume = { v, rn, all -> viewModel.updateSelectedClipVolume(v, rn, all) },
+                            onAddClipVolumeKeyframe = { viewModel.addOrUpdateClipVolumeKeyframeAtPlayhead() },
+                            onDeleteClipVolumeKeyframe = { viewModel.deleteClipVolumeKeyframeAtPlayhead() },
+                            onDeleteAllClipVolumeKeyframes = { viewModel.deleteAllClipVolumeKeyframes() },
+                            onUpdateSpeed = { viewModel.updateSelectedClipSpeed(it) },
+                            onUpdateOpacity = { viewModel.updateSelectedClipOpacity(it) },
+                            onUpdateTransform = { viewModel.updateSelectedClipTransform(it) },
+                            onFillCanvas = { viewModel.fillSelectedClipCanvas() },
+                            onResetTransform = { viewModel.resetSelectedClipTransform() },
+                            onApplyPreviewVideoGesture = { z, px, py, rot -> viewModel.applyPreviewVideoGesture(z, px, py, rot) },
+                            onUpdateCrop = { viewModel.updateSelectedClipCrop(it) },
+                            onUpdateMask = { viewModel.updateSelectedClipMask(it) },
+                            onUpdateMotionBlur = { viewModel.updateSelectedClipMotionBlur(it) },
+                            onUpdateStabilize = { viewModel.updateSelectedClipStabilize(it) },
+                            onUpdateAnimation = { viewModel.updateSelectedClipAnimation(it) },
+                            onToggleKeyframeMode = { viewModel.toggleKeyframeMode() },
+                            onAddTransformKeyframe = { viewModel.addTransformKeyframeAtPlayhead() },
+                            onDeleteTransformKeyframe = { viewModel.deleteCurrentOrSelectedTransformKeyframe() },
+                            onDeleteAllTransformKeyframes = { viewModel.deleteAllTransformKeyframes() },
+                            onToggleKeyframe = { viewModel.toggleKeyframeAtPlayhead() },
+                            onSetSegmentGraph = { id, g -> viewModel.setKeyframeSegmentGraph(id, g) },
+                            onApplyEffect = { t, i -> viewModel.applyOrAddEffect(t, i) },
+                            onSplitEffect = { viewModel.splitEffectAtPlayhead(it) },
+                            onDuplicateEffect = { viewModel.duplicateEffectLayer(it) },
+                            onSetEffectObjectTarget = { id, all -> viewModel.setEffectObjectTarget(id, all) },
+                            onDeleteEffect = { viewModel.removeEffectLayer(it) },
+                            onUpdateTransition = { id, t, d, all -> viewModel.updateTransition(id, t, d, all) },
+                            onUpdateAdjust = { viewModel.updateAdjust(it) },
+                            onAutoAdjust = { viewModel.applySmartAutoAdjust() },
+                            onResetAdjust = { viewModel.resetAdjust() },
+                            onSelectPreset = { viewModel.applyPreset(it) },
+                            onChangeFilterIntensity = { viewModel.setFilterIntensity(it) },
+                            onUpdateOverlay = { viewModel.updateOverlay(it) },
+                            onSplitOverlay = { viewModel.splitOverlayAtPlayhead(it) },
+                            onDuplicateOverlay = { viewModel.duplicateOverlay(it) },
+                            onDeleteOverlay = { viewModel.deleteOverlay(it) },
+                            onAddTextOrCaption = { txt, cap -> viewModel.addTextOrCaption(txt, cap) },
+                            onUpdateTextTrack = { viewModel.updateTextTrack(it) },
+                            onUpdateTextTransform = { px, py, z, rot, op, hist ->
+                                viewModel.updateSelectedTextTransform(px, py, z, rot, op, hist)
+                            },
+                            onSplitText = { viewModel.splitTextAtPlayhead(it) },
+                            onGenerateAutoCaptions = { viewModel.generateAutoCaptions() },
+                            onDeleteText = { viewModel.deleteTextTrack(it) },
+                            onUpdateAudioVolume = { id, v, rn -> viewModel.updateAudioVolume(id, v, rn) },
+                            onAddAudioVolumeKeyframe = { viewModel.addOrUpdateAudioVolumeKeyframeAtPlayhead(it) },
+                            onDeleteAudioVolumeKeyframe = { viewModel.deleteAudioVolumeKeyframeAtPlayhead(it) },
+                            onDeleteAllAudioVolumeKeyframes = { viewModel.deleteAllAudioVolumeKeyframes(it) },
+                            onSplitAudio = { viewModel.splitAudioAtPlayhead(it) },
+                            onDuplicateAudio = { viewModel.duplicateAudioTrack(it) },
+                            onDeleteAudio = { viewModel.deleteAudioTrack(it) },
+                            onToggleEndingCard = { viewModel.toggleEndingCard() },
+                            onSelectAspect = { viewModel.setAspectPreset(it) },
+                            onSelectBg = { viewModel.setCanvasBackground(it) },
                             onCycleCanvasFit = { viewModel.cycleCanvasFitMode() },
-                            onTrimLeft = { viewModel.trimLeftAtPlayhead() },
-                            onSplit = { viewModel.splitSelectedLayerAtPlayhead() },
-                            onTrimRight = { viewModel.trimRightAtPlayhead() },
-                            onToggleMute = { viewModel.toggleSelectedLayerMute() },
-                            onSetSpeed = { viewModel.setSelectedLayerSpeed(it) },
-                            onSetColor = { viewModel.setSelectedLayerColor(it) },
-                            onToggleBorderShadow = { viewModel.toggleSelectedLayerBorderShadow() },
-                            onSetBlendOpacity = { b, a -> viewModel.setSelectedLayerBlendAndOpacity(b, a) },
-                            onUpdateTransform = { rot, flip -> viewModel.updateSelectedLayerTransform(rot, flip) },
-                            onUpdateShapeOrText = { s, txt -> viewModel.updateSelectedLayerShapeOrText(s, txt) },
                             onToggleBypass = { viewModel.toggleBypass() },
                             onStartExport = { viewModel.startHighQualityExport(it) },
                             onCancelExport = { viewModel.cancelExport() },

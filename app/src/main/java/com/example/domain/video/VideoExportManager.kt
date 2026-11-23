@@ -2,6 +2,7 @@ package com.example.domain.video
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -10,21 +11,30 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.audio.SpeedProvider
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
+import com.example.data.model.AdjustSettings
 import com.example.data.model.ExportRecord
 import com.example.data.model.FfxPreset
-import com.example.data.model.LayerKind
-import com.example.data.model.TimelineLayer
+import com.example.data.model.OverlayTrackItem
+import com.example.data.model.SpeedMode
+import com.example.data.model.TextTrackItem
+import com.example.data.model.TransitionSpec
+import com.example.data.model.VideoClipSegment
+import com.example.data.model.VideoEffectLayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -41,11 +51,16 @@ class VideoExportManager(private val context: Context) {
     private var activeTransformer: Transformer? = null
     private var progressRunnable: Runnable? = null
 
-    fun startExport(
-        sourceUri: Uri,
-        clipDurationMs: Long,
-        layers: List<TimelineLayer>,
+    fun startCapCutExport(
+        sourceVideoUri: Uri,
+        clips: List<VideoClipSegment>,
+        transitions: List<TransitionSpec>,
+        effectLayers: List<VideoEffectLayer>,
+        overlays: List<OverlayTrackItem>,
+        texts: List<TextTrackItem>,
+        adjust: AdjustSettings,
         activePreset: FfxPreset,
+        filterIntensity: Float,
         config: ExportConfig,
         onProgress: (Int) -> Unit,
         onSuccess: (ExportRecord, savedLocationLabel: String) -> Unit,
@@ -64,46 +79,97 @@ class VideoExportManager(private val context: Context) {
         val tempFile = File(exportDir, finalFileName)
         if (tempFile.exists()) tempFile.delete()
 
-        val effects = VideoEffectsEngine.buildExportEffectsForTimeline(
-            layers = layers,
-            clipDurationMs = clipDurationMs,
-            targetHeight = config.resolution.targetHeight,
-        )
+        val spans = VideoEffectsEngine.computeClipSpans(clips)
+        val trackTypes = if (config.removeAudio) {
+            setOf(C.TRACK_TYPE_VIDEO)
+        } else {
+            setOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_VIDEO)
+        }
+        val seqBuilder = EditedMediaItemSequence.Builder(trackTypes)
+        var cursorMs = 0L
+        spans.forEach { span ->
+            val clip = span.clip
+            if (span.startMs > cursorMs + 40L) {
+                seqBuilder.addGap((span.startMs - cursorMs) * 1_000L)
+                cursorMs = span.startMs
+            }
+            val clipUri = clip.sourceUriString?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                ?: sourceVideoUri
+            val mediaBuilder = MediaItem.Builder().setUri(clipUri)
 
-        val videoLayer = layers.firstOrNull { it.kind == LayerKind.VIDEO && it.isVisible }
-        val muteAudio = config.removeAudio || (videoLayer?.isMuted == true)
+            val trimStart = if (clip.isFrozen) clip.freezeAtMs.coerceAtLeast(0L) else clip.trimStartMs.coerceAtLeast(0L)
+            val trimEnd = if (clip.isFrozen) {
+                (clip.freezeAtMs + 250L).coerceAtMost(clip.sourceDurationMs.coerceAtLeast(300L))
+            } else {
+                clip.trimEndMs.coerceAtLeast(trimStart + 250L)
+            }
+            if (trimStart > 30L || trimEnd < clip.sourceDurationMs - 30L) {
+                mediaBuilder.setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(trimStart)
+                        .setEndPositionMs(trimEnd)
+                        .build()
+                )
+            }
 
-        val mediaItemBuilder = MediaItem.Builder().setUri(sourceUri)
-        if (videoLayer != null && clipDurationMs > 0L &&
-            (videoLayer.startMs > 50L || videoLayer.endMs < clipDurationMs - 50L) &&
-            videoLayer.endMs > videoLayer.startMs
-        ) {
-            mediaItemBuilder.setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(videoLayer.startMs.coerceAtLeast(0L))
-                    .setEndPositionMs(videoLayer.endMs.coerceAtMost(clipDurationMs))
-                    .build()
+            val effects = VideoEffectsEngine.buildExportEffectsForClip(
+                context = context,
+                clip = clip,
+                clipStartInTimelineMs = span.startMs,
+                allClips = clips,
+                transitions = transitions,
+                effectLayers = effectLayers,
+                overlays = overlays,
+                texts = texts,
+                adjust = adjust,
+                filterPreset = activePreset,
+                filterIntensity = filterIntensity,
+                config = config,
             )
+
+            val muteAudio = config.removeAudio || clip.isMuted || (clip.volumePercent <= 0 && clip.volumeKeyframes.isEmpty())
+            val itemBuilder = EditedMediaItem.Builder(mediaBuilder.build())
+                .setRemoveAudio(muteAudio)
+                .setEffects(effects)
+
+            if (clip.isFrozen) {
+                itemBuilder.setDurationUs(clip.freezeDurationMs * 1_000L)
+            }
+
+            val baseDurUs = clip.baseDurationMs() * 1_000L
+            val normalSpd = clip.speed.normalSpeed
+            if (clip.speed.mode == SpeedMode.NORMAL && abs(normalSpd - 1.0f) > 0.02f) {
+                val clamped = normalSpd.coerceIn(0.1f, 20f)
+                itemBuilder.setSpeed(object : SpeedProvider {
+                    override fun getSpeed(presentationTimeUs: Long): Float = clamped
+                    override fun getNextSpeedChangeTimeUs(inputTimeUs: Long): Long = C.TIME_UNSET
+                })
+            } else if (clip.speed.mode != SpeedMode.NORMAL) {
+                // 5-segment piecewise speed curve via SpeedProvider
+                val segmentCount = 5
+                val segUs = (baseDurUs / segmentCount).coerceAtLeast(100_000L)
+                itemBuilder.setSpeed(object : SpeedProvider {
+                    override fun getSpeed(presentationTimeUs: Long): Float {
+                        val prog = (presentationTimeUs.toFloat() / baseDurUs.toFloat()).coerceIn(0f, 1f)
+                        return clip.speed.speedAtProgress(prog).coerceIn(0.1f, 16f)
+                    }
+
+                    override fun getNextSpeedChangeTimeUs(inputTimeUs: Long): Long {
+                        val nextIdx = (inputTimeUs / segUs) + 1L
+                        val nextBoundary = nextIdx * segUs
+                        return if (nextBoundary < baseDurUs) nextBoundary else C.TIME_UNSET
+                    }
+                })
+            }
+            seqBuilder.addItem(itemBuilder.build())
+            cursorMs = maxOf(cursorMs, span.endMs)
         }
 
-        val itemBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
-            .setRemoveAudio(muteAudio)
-            .setEffects(effects)
-
-        val layerSpeed = videoLayer?.speedMultiplier ?: 1.0f
-        val presetSpeed = activePreset.speedMultiplier.toFloat()
-        val combinedSpeed = (layerSpeed * presetSpeed).coerceIn(0.25f, 4.0f)
-        if (abs(combinedSpeed - 1.0f) > 0.02f) {
-            itemBuilder.setSpeed(object : SpeedProvider {
-                override fun getSpeed(presentationTimeUs: Long): Float = combinedSpeed
-                override fun getNextSpeedChangeTimeUs(inputTimeUs: Long): Long = Long.MAX_VALUE
-            })
-        }
-
-        val editedMediaItem = itemBuilder.build()
+        val sequence = seqBuilder.build()
+        val composition = Composition.Builder(listOf(sequence)).build()
 
         val videoEncoderSettings = VideoEncoderSettings.Builder()
-            .setBitrate(config.bitrateMbps.coerceIn(2, 120) * 1_000_000)
+            .setBitrate(config.bitrateMbps.coerceIn(4, 120) * 1_000_000)
             .build()
 
         val encoderFactory = DefaultEncoderFactory.Builder(context)
@@ -143,7 +209,7 @@ class VideoExportManager(private val context: Context) {
             .build()
 
         activeTransformer = transformer
-        transformer.start(editedMediaItem, tempFile.absolutePath)
+        transformer.start(composition, tempFile.absolutePath)
 
         val progressHolder = ProgressHolder()
         val poller = object : Runnable {
@@ -154,12 +220,12 @@ class VideoExportManager(private val context: Context) {
                     onProgress(progressHolder.progress.coerceIn(0, 99))
                 }
                 if (state != Transformer.PROGRESS_STATE_NOT_STARTED) {
-                    mainHandler.postDelayed(this, 160L)
+                    mainHandler.postDelayed(this, 140L)
                 }
             }
         }
         progressRunnable = poller
-        mainHandler.postDelayed(poller, 160L)
+        mainHandler.postDelayed(poller, 140L)
     }
 
     fun cancelExport() {
@@ -223,10 +289,10 @@ class VideoExportManager(private val context: Context) {
                 }
 
                 val record = ExportRecord(
-                    presetId = preset.id.ifBlank { "luna_timeline" },
-                    presetName = preset.name,
+                    presetId = preset.id.ifBlank { "luna_capcut" },
+                    presetName = "${preset.name} • ${config.frameRate}fps",
                     outputFileName = finalFileName,
-                    resolutionLabel = config.resolution.label,
+                    resolutionLabel = "${config.resolution.shortLabel} ${config.frameRate}fps",
                     codecLabel = config.codec.label,
                     bitrateMbps = config.bitrateMbps.toLong(),
                     fileSizeBytes = sizeBytes,
@@ -270,6 +336,41 @@ class VideoExportManager(private val context: Context) {
                     durationMs = durationMs,
                 )
             }
+
+        suspend fun extractFilmstripThumbnails(
+            context: Context,
+            uri: Uri,
+            durationMs: Long,
+            count: Int = 10,
+        ): List<ImageBitmap> = withContext(Dispatchers.IO) {
+            val retriever = MediaMetadataRetriever()
+            val results = mutableListOf<ImageBitmap>()
+            try {
+                retriever.setDataSource(context, uri)
+                val safeDurUs = durationMs.coerceAtLeast(1_000L) * 1_000L
+                for (i in 0 until count) {
+                    val timeUs = (safeDurUs * i) / count.coerceAtLeast(1)
+                    val frame: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(
+                            timeUs,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            120,
+                            90,
+                        )
+                    } else {
+                        retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            ?.let { Bitmap.createScaledBitmap(it, 120, 90, true) }
+                    }
+                    if (frame != null) {
+                        results.add(frame.asImageBitmap())
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                runCatching { retriever.release() }
+            }
+            results
+        }
 
         fun queryDisplayName(context: Context, uri: Uri): String? {
             return runCatching {

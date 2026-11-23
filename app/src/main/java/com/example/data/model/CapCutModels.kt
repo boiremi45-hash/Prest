@@ -1,0 +1,781 @@
+package com.example.data.model
+
+import java.util.UUID
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+enum class EasingGraph(val label: String) {
+    NONE("None"),
+    LINEAR("Linear"),
+    EASE_IN("Ease In"),
+    EASE_OUT("Ease Out"),
+    QUAD_IN("Quad In"),
+    QUAD_OUT("Quad Out"),
+    CUBIC_IN("Cubic In"),
+    CUBIC_OUT("Cubic Out"),
+    EASE("Ease"),
+    QUAD_EASE("Quad Ease"),
+    CUBIC_EASE("Cubic Ease"),
+    CIRCULAR("Circular"),
+    REBOUND("Rebound"),
+    FLOW_1("Flow 1"),
+    FLOW_2("Flow 2"),
+    FLOW_3("Flow 3"),
+    FLOW_4("Flow 4"),
+    FLOW_5("Flow 5"),
+    FLOW_6("Flow 6"),
+    FLOW_7("Flow 7"),
+    BOUNCE("Bounce");
+
+    fun evaluate(rawT: Float): Float {
+        val t = rawT.coerceIn(0f, 1f)
+        return when (this) {
+            NONE -> if (t >= 1f) 1f else 0f
+            LINEAR -> t
+            EASE_IN -> 1f - cos((t * PI) / 2.0).toFloat()
+            EASE_OUT -> sin((t * PI) / 2.0).toFloat()
+            QUAD_IN -> t * t
+            QUAD_OUT -> 1f - (1f - t) * (1f - t)
+            CUBIC_IN -> t * t * t
+            CUBIC_OUT -> 1f - (1f - t).pow(3)
+            EASE -> (-(cos(PI * t) - 1.0) / 2.0).toFloat()
+            QUAD_EASE -> if (t < 0.5f) 2f * t * t else 1f - (-2f * t + 2f).pow(2) / 2f
+            CUBIC_EASE -> if (t < 0.5f) 4f * t * t * t else 1f - (-2f * t + 2f).pow(3) / 2f
+            CIRCULAR -> if (t < 0.5f) {
+                ((1.0 - sqrt((1f - (2f * t).pow(2)).coerceAtLeast(0f).toDouble())) / 2.0).toFloat()
+            } else {
+                ((sqrt((1f - (-2f * t + 2f).pow(2)).coerceAtLeast(0f).toDouble()) + 1.0) / 2.0).toFloat()
+            }
+            REBOUND -> {
+                val c4 = (2.0 * PI) / 3.0
+                when {
+                    t == 0f -> 0f
+                    t == 1f -> 1f
+                    else -> (2.0.pow(-10.0 * t) * sin((t * 10.0 - 0.75) * c4) + 1.0).toFloat()
+                }
+            }
+            FLOW_1 -> cubicBezierY(t, 0.25f, 0.1f, 0.25f, 1.0f)
+            FLOW_2 -> cubicBezierY(t, 0.42f, 0.0f, 0.20f, 1.0f)
+            FLOW_3 -> cubicBezierY(t, 0.16f, 1.0f, 0.30f, 1.0f)
+            FLOW_4 -> cubicBezierY(t, 0.70f, 0.0f, 0.30f, 1.0f)
+            FLOW_5 -> cubicBezierY(t, 0.85f, 0.0f, 0.15f, 1.0f)
+            FLOW_6 -> cubicBezierY(t, 0.34f, 1.45f, 0.64f, 1.0f)
+            FLOW_7 -> cubicBezierY(t, 0.68f, -0.45f, 0.32f, 1.45f)
+            BOUNCE -> bounceOut(t)
+        }
+    }
+
+    private fun bounceOut(x: Float): Float {
+        val n1 = 7.5625f
+        val d1 = 2.75f
+        return when {
+            x < 1f / d1 -> n1 * x * x
+            x < 2f / d1 -> {
+                val u = x - 1.5f / d1
+                n1 * u * u + 0.75f
+            }
+            x < 2.5f / d1 -> {
+                val u = x - 2.25f / d1
+                n1 * u * u + 0.9375f
+            }
+            else -> {
+                val u = x - 2.625f / d1
+                n1 * u * u + 0.984375f
+            }
+        }
+    }
+
+    private fun cubicBezierY(t: Float, p1x: Float, p1y: Float, p2x: Float, p2y: Float): Float {
+        // Solve X(u) = t with 6 Newton/bisection steps, then evaluate Y(u)
+        var u = t
+        for (i in 0 until 6) {
+            val inv = 1f - u
+            val x = 3f * inv * inv * u * p1x + 3f * inv * u * u * p2x + u * u * u
+            val dx = 3f * inv * inv * p1x + 6f * inv * u * (p2x - p1x) + 3f * u * u * (1f - p2x)
+            if (abs(dx) < 1e-4f) break
+            u = (u - (x - t) / dx).coerceIn(0f, 1f)
+        }
+        val inv = 1f - u
+        return 3f * inv * inv * u * p1y + 3f * inv * u * u * p2y + u * u * u
+    }
+}
+
+data class KeyframeNode(
+    val id: String = UUID.randomUUID().toString(),
+    val timeMs: Long,
+    val easingToNext: EasingGraph = EasingGraph.LINEAR,
+    val posX: Float = 0f,
+    val posY: Float = 0f,
+    val zoomPercent: Float = 100f,
+    val rotateDeg: Float = 0f,
+    val opacity: Float = 1f,
+    val brightness: Float = 0f,
+    val contrast: Float = 0f,
+    val saturation: Float = 0f,
+    val filterIntensity: Float = 1f,
+)
+
+data class EvaluatedTransformState(
+    val posX: Float,
+    val posY: Float,
+    val zoomPercent: Float,
+    val rotateDeg: Float,
+    val opacity: Float,
+    val brightness: Float,
+    val contrast: Float,
+    val saturation: Float,
+    val filterIntensity: Float,
+)
+
+object KeyframeEvaluator {
+    fun evaluate(
+        keyframes: List<KeyframeNode>,
+        localTimeMs: Long,
+        baseTransform: TransformSettings,
+        baseOpacity: Float,
+        baseAdjust: AdjustSettings,
+        baseFilterIntensity: Float,
+    ): EvaluatedTransformState {
+        if (keyframes.isEmpty()) {
+            return EvaluatedTransformState(
+                posX = baseTransform.posX,
+                posY = baseTransform.posY,
+                zoomPercent = baseTransform.zoomPercent,
+                rotateDeg = baseTransform.rotateDeg,
+                opacity = baseOpacity,
+                brightness = baseAdjust.brightness,
+                contrast = baseAdjust.contrast,
+                saturation = baseAdjust.saturation,
+                filterIntensity = baseFilterIntensity,
+            )
+        }
+        val sorted = keyframes.sortedBy { it.timeMs }
+        if (localTimeMs <= sorted.first().timeMs) {
+            val k = sorted.first()
+            return EvaluatedTransformState(
+                k.posX, k.posY, k.zoomPercent, k.rotateDeg, k.opacity,
+                k.brightness, k.contrast, k.saturation, k.filterIntensity,
+            )
+        }
+        if (localTimeMs >= sorted.last().timeMs) {
+            val k = sorted.last()
+            return EvaluatedTransformState(
+                k.posX, k.posY, k.zoomPercent, k.rotateDeg, k.opacity,
+                k.brightness, k.contrast, k.saturation, k.filterIntensity,
+            )
+        }
+        for (i in 0 until sorted.lastIndex) {
+            val a = sorted[i]
+            val b = sorted[i + 1]
+            if (localTimeMs in a.timeMs..b.timeMs) {
+                val span = (b.timeMs - a.timeMs).coerceAtLeast(1L).toFloat()
+                val rawT = (localTimeMs - a.timeMs) / span
+                val e = a.easingToNext.evaluate(rawT)
+                fun lerp(v0: Float, v1: Float) = v0 + (v1 - v0) * e
+                return EvaluatedTransformState(
+                    posX = lerp(a.posX, b.posX),
+                    posY = lerp(a.posY, b.posY),
+                    zoomPercent = lerp(a.zoomPercent, b.zoomPercent),
+                    rotateDeg = lerp(a.rotateDeg, b.rotateDeg),
+                    opacity = lerp(a.opacity, b.opacity).coerceIn(0f, 1f),
+                    brightness = lerp(a.brightness, b.brightness),
+                    contrast = lerp(a.contrast, b.contrast),
+                    saturation = lerp(a.saturation, b.saturation),
+                    filterIntensity = lerp(a.filterIntensity, b.filterIntensity).coerceIn(0f, 1f),
+                )
+            }
+        }
+        return EvaluatedTransformState(
+            baseTransform.posX, baseTransform.posY, baseTransform.zoomPercent,
+            baseTransform.rotateDeg, baseOpacity, baseAdjust.brightness,
+            baseAdjust.contrast, baseAdjust.saturation, baseFilterIntensity,
+        )
+    }
+
+    fun surroundingSegment(keyframes: List<KeyframeNode>, localTimeMs: Long): Pair<KeyframeNode, KeyframeNode>? {
+        val sorted = keyframes.sortedBy { it.timeMs }
+        for (i in 0 until sorted.lastIndex) {
+            val a = sorted[i]
+            val b = sorted[i + 1]
+            if (localTimeMs in a.timeMs..b.timeMs) return a to b
+        }
+        return null
+    }
+}
+
+data class TextKeyframeNode(
+    val id: String = UUID.randomUUID().toString(),
+    val timeMs: Long,
+    val easingToNext: EasingGraph = EasingGraph.LINEAR,
+    val posX: Float = 0f,
+    val posY: Float = -0.68f,
+    val scale: Float = 1.0f,
+    val rotationDeg: Float = 0f,
+    val opacity: Float = 1.0f,
+)
+
+data class EvaluatedTextState(
+    val posX: Float,
+    val posY: Float,
+    val scale: Float,
+    val rotationDeg: Float,
+    val opacity: Float,
+)
+
+object TextKeyframeEvaluator {
+    fun evaluate(
+        keyframes: List<TextKeyframeNode>,
+        localTimeMs: Long,
+        baseItem: TextTrackItem,
+    ): EvaluatedTextState {
+        if (keyframes.isEmpty()) {
+            return EvaluatedTextState(
+                posX = baseItem.posX,
+                posY = baseItem.posY,
+                scale = baseItem.scale,
+                rotationDeg = baseItem.rotationDeg,
+                opacity = baseItem.opacity.coerceIn(0f, 1f),
+            )
+        }
+        val sorted = keyframes.sortedBy { it.timeMs }
+        if (localTimeMs <= sorted.first().timeMs) {
+            val k = sorted.first()
+            return EvaluatedTextState(k.posX, k.posY, k.scale, k.rotationDeg, k.opacity.coerceIn(0f, 1f))
+        }
+        if (localTimeMs >= sorted.last().timeMs) {
+            val k = sorted.last()
+            return EvaluatedTextState(k.posX, k.posY, k.scale, k.rotationDeg, k.opacity.coerceIn(0f, 1f))
+        }
+        for (i in 0 until sorted.lastIndex) {
+            val a = sorted[i]
+            val b = sorted[i + 1]
+            if (localTimeMs in a.timeMs..b.timeMs) {
+                val span = (b.timeMs - a.timeMs).coerceAtLeast(1L).toFloat()
+                val rawT = (localTimeMs - a.timeMs) / span
+                val e = a.easingToNext.evaluate(rawT)
+                fun lerp(v0: Float, v1: Float) = v0 + (v1 - v0) * e
+                return EvaluatedTextState(
+                    posX = lerp(a.posX, b.posX),
+                    posY = lerp(a.posY, b.posY),
+                    scale = lerp(a.scale, b.scale).coerceIn(0.35f, 3.5f),
+                    rotationDeg = lerp(a.rotationDeg, b.rotationDeg),
+                    opacity = lerp(a.opacity, b.opacity).coerceIn(0f, 1f),
+                )
+            }
+        }
+        return EvaluatedTextState(baseItem.posX, baseItem.posY, baseItem.scale, baseItem.rotationDeg, baseItem.opacity)
+    }
+
+    fun surroundingSegment(keyframes: List<TextKeyframeNode>, localTimeMs: Long): Pair<TextKeyframeNode, TextKeyframeNode>? {
+        val sorted = keyframes.sortedBy { it.timeMs }
+        for (i in 0 until sorted.lastIndex) {
+            val a = sorted[i]
+            val b = sorted[i + 1]
+            if (localTimeMs in a.timeMs..b.timeMs) return a to b
+        }
+        return null
+    }
+}
+
+data class VolumeKeyframeNode(
+    val id: String = UUID.randomUUID().toString(),
+    val timeMs: Long,
+    val volumePercent: Int = 100, // 0..1000
+    val easingToNext: EasingGraph = EasingGraph.LINEAR,
+)
+
+object VolumeKeyframeEvaluator {
+    fun evaluate(
+        keyframes: List<VolumeKeyframeNode>,
+        localTimeMs: Long,
+        baseVolumePercent: Int,
+    ): Int {
+        if (keyframes.isEmpty()) return baseVolumePercent.coerceIn(0, 1000)
+        val sorted = keyframes.sortedBy { it.timeMs }
+        if (localTimeMs <= sorted.first().timeMs) return sorted.first().volumePercent.coerceIn(0, 1000)
+        if (localTimeMs >= sorted.last().timeMs) return sorted.last().volumePercent.coerceIn(0, 1000)
+        for (i in 0 until sorted.lastIndex) {
+            val a = sorted[i]
+            val b = sorted[i + 1]
+            if (localTimeMs in a.timeMs..b.timeMs) {
+                val span = (b.timeMs - a.timeMs).coerceAtLeast(1L).toFloat()
+                val rawT = ((localTimeMs - a.timeMs) / span).coerceIn(0f, 1f)
+                val e = a.easingToNext.evaluate(rawT)
+                return Math.round(a.volumePercent + (b.volumePercent - a.volumePercent) * e).coerceIn(0, 1000)
+            }
+        }
+        return baseVolumePercent.coerceIn(0, 1000)
+    }
+}
+
+enum class SpeedMode(val label: String) {
+    NORMAL("Normal"),
+    CURVE("Curve"),
+    VELOCITY("Velocity effects"),
+}
+
+enum class CurveSpeedPreset(val label: String, val points: List<Float>) {
+    CUSTOM("Custom", listOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f)),
+    MONTAGE("Montage", listOf(1.8f, 0.5f, 1.6f, 0.4f, 1.5f)),
+    HERO("Hero", listOf(1.2f, 2.5f, 0.4f, 2.2f, 1.0f)),
+    BULLET("Bullet", listOf(2.8f, 0.35f, 0.35f, 2.5f, 1.2f)),
+    JUMP_CUT("Jump Cut", listOf(3.2f, 0.6f, 3.0f, 0.6f, 2.8f)),
+    FLASH_IN("Flash In", listOf(3.5f, 2.0f, 1.0f, 1.0f, 1.0f)),
+    FLASH_OUT("Flash Out", listOf(1.0f, 1.0f, 1.2f, 2.4f, 4.0f)),
+}
+
+enum class VelocityPreset(val label: String, val points: List<Float>) {
+    NONE("None", listOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f)),
+    AUTO_VELOCITY("Auto Velocity", listOf(2.4f, 0.45f, 2.2f, 0.45f, 2.0f)),
+    PULSE_BEAT("Pulse Beat", listOf(1.5f, 0.65f, 1.8f, 0.65f, 1.5f)),
+    FLASH_RAMP("Flash Ramp", listOf(4.0f, 0.5f, 0.5f, 3.5f, 1.0f)),
+    HERO_DROP("Hero Drop", listOf(1.8f, 0.3f, 0.3f, 0.5f, 2.8f)),
+}
+
+data class SpeedSettings(
+    val mode: SpeedMode = SpeedMode.NORMAL,
+    val normalSpeed: Float = 1.0f, // 0.1f .. 100.0f
+    val smoothSlowMo: Boolean = false,
+    val smoothSlowMoBetterQuality: Boolean = false,
+    val changeAudioPitch: Boolean = false,
+    val curvePreset: CurveSpeedPreset = CurveSpeedPreset.CUSTOM,
+    val curvePoints: List<Float> = listOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f),
+    val velocityPreset: VelocityPreset = VelocityPreset.NONE,
+) {
+    fun effectiveSpeedMultiplier(): Float = when (mode) {
+        SpeedMode.NORMAL -> normalSpeed.coerceIn(0.1f, 100f)
+        SpeedMode.CURVE -> curvePoints.average().toFloat().coerceIn(0.1f, 10f)
+        SpeedMode.VELOCITY -> velocityPreset.points.average().toFloat().coerceIn(0.1f, 10f)
+    }
+
+    fun speedAtProgress(progress01: Float): Float {
+        val pts = when (mode) {
+            SpeedMode.NORMAL -> return normalSpeed.coerceIn(0.1f, 100f)
+            SpeedMode.CURVE -> curvePoints
+            SpeedMode.VELOCITY -> if (velocityPreset == VelocityPreset.NONE) curvePoints else velocityPreset.points
+        }
+        if (pts.isEmpty()) return 1f
+        if (pts.size == 1) return pts.first().coerceIn(0.1f, 100f)
+        val scaled = progress01.coerceIn(0f, 1f) * (pts.size - 1)
+        val i = scaled.toInt().coerceIn(0, pts.size - 2)
+        val f = scaled - i
+        return (pts[i] + (pts[i + 1] - pts[i]) * f).coerceIn(0.1f, 100f)
+    }
+}
+
+data class TransformSettings(
+    val posX: Float = 0f,         // -1.0f .. 1.0f
+    val posY: Float = 0f,         // -1.0f .. 1.0f
+    val zoomPercent: Float = 100f, // 100f .. 360f (300f slider + Fill Canvas support)
+    val rotateDeg: Float = 0f,     // 0f .. 360f
+    val mirrorHorizontal: Boolean = false,
+)
+
+fun fillCanvasZoomPercent(
+    videoWidth: Int,
+    videoHeight: Int,
+    canvasRatio: Float,
+    rotationDeg: Float = 0f,
+): Float {
+    val safeW = videoWidth.coerceAtLeast(1).toFloat()
+    val safeH = videoHeight.coerceAtLeast(1).toFloat()
+    val safeCanvasRatio = canvasRatio.coerceIn(0.25f, 4f)
+    val vr = safeW / safeH
+
+    val hw = 1f
+    val hh = 1f / safeCanvasRatio
+    val fw: Float
+    val fh: Float
+    if (vr >= safeCanvasRatio) {
+        fw = hw
+        fh = hw / vr
+    } else {
+        fh = hh
+        fw = hh * vr
+    }
+    val rad = Math.toRadians(rotationDeg.toDouble())
+    val c = abs(cos(rad)).toFloat()
+    val s = abs(sin(rad)).toFloat()
+    val reqHalfW = hw * c + hh * s
+    val reqHalfH = hw * s + hh * c
+    val scale = maxOf(reqHalfW / fw.coerceAtLeast(0.01f), reqHalfH / fh.coerceAtLeast(0.01f))
+    return (scale * 100f).coerceIn(100f, 360f)
+}
+
+enum class CropAspect(val label: String, val ratio: Float?) {
+    FREE("Free", null),
+    R_9_16("9:16", 9f / 16f),
+    R_16_9("16:9", 16f / 9f),
+    R_1_1("1:1", 1f),
+    R_4_3("4:3", 4f / 3f),
+    R_3_4("3:4", 3f / 4f),
+}
+
+data class CropSettings(
+    val aspect: CropAspect = CropAspect.FREE,
+    val rotateDeg: Float = 0f,
+    val scaleCrop: Float = 1.0f,
+)
+
+enum class MaskShape(val label: String, val code: Int) {
+    NONE("None", 0),
+    SPLIT("Split", 1),
+    FILMSTRIP("Filmstrip", 2),
+    CIRCLE("Circle", 3),
+    RECTANGLE("Rectangle", 4),
+    HEART("Heart", 5),
+    STAR("Star", 6),
+}
+
+data class MaskSettings(
+    val shape: MaskShape = MaskShape.NONE,
+    val feather: Float = 0.08f,
+    val invert: Boolean = false,
+    val sizeScale: Float = 0.72f,
+)
+
+enum class MotionBlurDirection(val label: String) {
+    BOTH("Both"),
+    FORWARD("Forward"),
+    BACKWARD("Backward"),
+}
+
+data class MotionBlurSettings(
+    val enabled: Boolean = false,
+    val blurAmount: Float = 0.5f,
+    val blendAmount: Float = 0.5f,
+    val direction: MotionBlurDirection = MotionBlurDirection.BOTH,
+    val times: Int = 2,
+)
+
+enum class StabilizeMode(val label: String) {
+    OFF("None"),
+    MINIMAL("Minimal cropping"),
+    RECOMMENDED("Recommended"),
+    MOST_STABLE("Most stable"),
+}
+
+enum class AnimationCategory(val label: String) {
+    IN("In"),
+    OUT("Out"),
+    COMBO("Combo"),
+}
+
+enum class ClipAnimationType(val label: String, val code: Int) {
+    NONE("None", 0),
+    TRICKLING("Trickling", 1),
+    STRETCHED_IN("Stretched In", 2),
+    LASER_SCAN("Laser Scan", 3),
+    FADE_ASIDE("Fade Aside", 4),
+    GHOST("Ghost", 5),
+    FLUID_BURN("Fluid Burn", 6),
+    GLITCH("Glitch", 7),
+}
+
+data class AnimationSettings(
+    val inType: ClipAnimationType = ClipAnimationType.NONE,
+    val inDurationSec: Float = 0.5f,
+    val outType: ClipAnimationType = ClipAnimationType.NONE,
+    val outDurationSec: Float = 0.5f,
+    val comboType: ClipAnimationType = ClipAnimationType.NONE,
+    val comboDurationSec: Float = 0.8f,
+)
+
+enum class TransitionType(val label: String, val code: Int) {
+    NONE("None", 0),
+    DREAMY_FLASH("Dreamy Flash", 1),
+    GLITCH_SPLIT("Glitch Split", 2),
+    PUMPKIN_DROP("Pumpkin Drop", 3),
+    SPARKLE_POPS("Sparkle Pops", 4),
+    LIGHT_TWIST("Light Twist", 5),
+    SCANLINE_GLITCH("Scanline Glitch", 6),
+    PULSE_FADE("Pulse Fade", 7),
+}
+
+data class TransitionSpec(
+    val id: String = UUID.randomUUID().toString(),
+    val afterClipId: String,
+    val type: TransitionType = TransitionType.NONE,
+    val durationSec: Float = 0.4f,
+)
+
+enum class EffectMainTab(val label: String) {
+    VIDEO("Video effects"),
+    BODY("Body effects"),
+    STYLE("Style"),
+    AI("AI effects"),
+}
+
+enum class EffectSubCategory(val label: String) {
+    TRENDING("Trending"),
+    CLASSIC("Classic"),
+    NEW("NEW"),
+}
+
+enum class CapCutEffectType(
+    val label: String,
+    val code: Int,
+    val mainTab: EffectMainTab,
+    val category: EffectSubCategory,
+) {
+    NONE("None", 0, EffectMainTab.VIDEO, EffectSubCategory.TRENDING),
+    MATRIX_PANELS("Matrix Panels", 1, EffectMainTab.VIDEO, EffectSubCategory.TRENDING),
+    ANALOG_SNOW("Analog Snow", 2, EffectMainTab.VIDEO, EffectSubCategory.CLASSIC),
+    BLUR("Blur", 3, EffectMainTab.VIDEO, EffectSubCategory.CLASSIC),
+    FLASH_COPIES("Flash Copies", 4, EffectMainTab.VIDEO, EffectSubCategory.TRENDING),
+    DREAMLAND("Dreamland", 5, EffectMainTab.STYLE, EffectSubCategory.TRENDING),
+    PHOTO_STRIP("Photo Strip", 6, EffectMainTab.VIDEO, EffectSubCategory.CLASSIC),
+    LASER_GRID("Laser Grid", 7, EffectMainTab.BODY, EffectSubCategory.NEW),
+    NEON_RAY("Neon Ray", 8, EffectMainTab.BODY, EffectSubCategory.TRENDING),
+    RETRO_RAYS("Retro Rays", 9, EffectMainTab.STYLE, EffectSubCategory.CLASSIC),
+    LED_MATRIX("LED Matrix", 10, EffectMainTab.AI, EffectSubCategory.NEW),
+    GOLDEN_RAY("Golden Ray", 11, EffectMainTab.STYLE, EffectSubCategory.NEW),
+    TRACKING_GLITCH("Tracking Glitch", 12, EffectMainTab.AI, EffectSubCategory.TRENDING),
+}
+
+data class VideoEffectLayer(
+    val id: String = UUID.randomUUID().toString(),
+    val type: CapCutEffectType,
+    val intensity: Float = 0.75f,
+    val startMs: Long = 0L,
+    val endMs: Long = 8_000L,
+    val applyToAllVideos: Boolean = false,
+)
+
+enum class HslColorBand(val label: String, val colorArgb: Long, val hueCenterDeg: Float) {
+    RED("Red", 0xFFEF4444L, 0f),
+    ORANGE("Orange", 0xFFF97316L, 28f),
+    YELLOW("Yellow", 0xFFEAB308L, 58f),
+    GREEN("Green", 0xFF22C55EL, 120f),
+    CYAN("Cyan", 0xFF06B6D4L, 180f),
+    BLUE("Blue", 0xFF3B82F6L, 225f),
+    PURPLE("Purple", 0xFF8B5CF6L, 272f),
+    MAGENTA("Magenta", 0xFFEC4899L, 320f),
+}
+
+data class HslBandValue(
+    val hue: Float = 0f,        // -50f..50f
+    val saturation: Float = 0f, // -50f..50f
+    val lightness: Float = 0f,  // -50f..50f
+)
+
+data class ColorWheelSpec(
+    val liftHueDeg: Float = 0f,
+    val liftAmount: Float = 0f, // 0f..1f
+    val liftLuma: Float = 0f,   // -0.5f..0.5f
+    val gammaHueDeg: Float = 0f,
+    val gammaAmount: Float = 0f,
+    val gammaLuma: Float = 0f,
+    val gainHueDeg: Float = 0f,
+    val gainAmount: Float = 0f,
+    val gainLuma: Float = 0f,
+)
+
+enum class CurveChannel(val label: String, val accentArgb: Long) {
+    WHITE("White", 0xFFF4F5FAL),
+    RED("Red", 0xFFEF4444L),
+    GREEN("Green", 0xFF22C55EL),
+    BLUE("Blue", 0xFF3B82F6L),
+}
+
+data class CurvePoint(
+    val x: Float, // 0f..1f
+    val y: Float, // 0f..1f
+)
+
+data class RgbCurvesSpec(
+    val white: List<CurvePoint> = defaultCurvePoints(),
+    val red: List<CurvePoint> = defaultCurvePoints(),
+    val green: List<CurvePoint> = defaultCurvePoints(),
+    val blue: List<CurvePoint> = defaultCurvePoints(),
+) {
+    fun pointsFor(channel: CurveChannel): List<CurvePoint> = when (channel) {
+        CurveChannel.WHITE -> white
+        CurveChannel.RED -> red
+        CurveChannel.GREEN -> green
+        CurveChannel.BLUE -> blue
+    }
+
+    fun isIdentity(): Boolean =
+        isLinear(white) && isLinear(red) && isLinear(green) && isLinear(blue)
+
+    private fun isLinear(pts: List<CurvePoint>): Boolean =
+        pts.all { abs(it.x - it.y) < 0.01f }
+
+    companion object {
+        fun defaultCurvePoints(): List<CurvePoint> = listOf(
+            CurvePoint(0f, 0f),
+            CurvePoint(0.25f, 0.25f),
+            CurvePoint(0.5f, 0.5f),
+            CurvePoint(0.75f, 0.75f),
+            CurvePoint(1f, 1f),
+        )
+    }
+}
+
+data class AdjustSettings(
+    val brightness: Float = 0f,   // -50..50
+    val contrast: Float = 0f,     // -50..50
+    val saturation: Float = 0f,   // -50..50
+    val brilliance: Float = 0f,   // -50..50
+    val sharpen: Float = 0f,      // 0..100
+    val clarity: Float = 0f,      // -50..50
+    val highlights: Float = 0f,   // -50..50
+    val shadows: Float = 0f,      // -50..50
+    val whites: Float = 0f,       // -50..50
+    val blacks: Float = 0f,       // -50..50
+    val temp: Float = 0f,         // -50..50
+    val hue: Float = 0f,          // -50..50
+    val fade: Float = 0f,         // 0..100
+    val vignette: Float = 0f,     // -50..50
+    val grain: Float = 0f,        // 0..100
+    val hsl: Map<HslColorBand, HslBandValue> = emptyMap(),
+    val colorWheel: ColorWheelSpec = ColorWheelSpec(),
+    val rgbCurves: RgbCurvesSpec = RgbCurvesSpec(),
+) {
+    fun hasToneCurveChanges(): Boolean =
+        !rgbCurves.isIdentity() ||
+            abs(brilliance) > 0.5f ||
+            abs(highlights) > 0.5f ||
+            abs(shadows) > 0.5f ||
+            abs(whites) > 0.5f ||
+            abs(blacks) > 0.5f ||
+            fade > 0.5f ||
+            colorWheel.liftAmount > 0.01f ||
+            colorWheel.gammaAmount > 0.01f ||
+            colorWheel.gainAmount > 0.01f ||
+            abs(colorWheel.liftLuma) > 0.01f ||
+            abs(colorWheel.gammaLuma) > 0.01f ||
+            abs(colorWheel.gainLuma) > 0.01f
+}
+
+enum class OverlayBlendMode(val label: String) {
+    NORMAL("Normal"),
+    FILTER("Filter"),
+    OVERLAY("Overlay"),
+    DARKEN("Darken"),
+    LIGHTEN("Lighten"),
+}
+
+data class OverlayTrackItem(
+    val id: String = UUID.randomUUID().toString(),
+    val uriString: String,
+    val isVideo: Boolean,
+    val displayName: String,
+    val startMs: Long = 0L,
+    val endMs: Long = 5_000L,
+    val posX: Float = 0f,     // normalized -1f..1f
+    val posY: Float = 0f,     // normalized -1f..1f
+    val scale: Float = 0.48f, // 0.15f..1.8f
+    val rotationDeg: Float = 0f,
+    val opacity: Float = 1.0f,
+    val blendMode: OverlayBlendMode = OverlayBlendMode.NORMAL,
+    val autoRemoveBg: Boolean = false,
+    val chromaEnabled: Boolean = false,
+    val chromaColorArgb: Long = 0xFF1FE066L,
+    val chromaIntensity: Float = 0.38f,
+    val chromaShadow: Float = 0.15f,
+)
+
+data class AudioTrackItem(
+    val id: String = UUID.randomUUID().toString(),
+    val uriString: String? = null,
+    val title: String,
+    val startMs: Long = 0L,
+    val endMs: Long = 8_000L,
+    val sourceStartMs: Long = 0L,
+    val volumePercent: Int = 100,
+    val reduceNoise: Boolean = false,
+    val volumeKeyframes: List<VolumeKeyframeNode> = emptyList(),
+)
+
+data class TextTrackItem(
+    val id: String = UUID.randomUUID().toString(),
+    val text: String,
+    val isCaption: Boolean = false,
+    val startMs: Long = 0L,
+    val endMs: Long = 4_000L,
+    val posX: Float = 0f,
+    val posY: Float = -0.68f,
+    val scale: Float = 1.0f,
+    val rotationDeg: Float = 0f,
+    val opacity: Float = 1.0f,
+    val colorArgb: Long = 0xFFFFFFFFL,
+    val bold: Boolean = true,
+    val keyframes: List<TextKeyframeNode> = emptyList(),
+)
+
+data class VideoClipSegment(
+    val id: String = UUID.randomUUID().toString(),
+    val sourceUriString: String? = null,
+    val displayName: String = "Main Clip",
+    val timelineStartMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 8_000L,
+    val sourceDurationMs: Long = 8_000L,
+    val isReversed: Boolean = false,
+    val isFrozen: Boolean = false,
+    val freezeAtMs: Long = 0L,
+    val freezeDurationMs: Long = 3_000L,
+    val volumePercent: Int = 100, // 0..1000
+    val isMuted: Boolean = false,
+    val reduceNoise: Boolean = false,
+    val volumeKeyframes: List<VolumeKeyframeNode> = emptyList(),
+    val beatMarkersMs: List<Long> = emptyList(),
+    val opacity: Float = 1.0f,
+    val speed: SpeedSettings = SpeedSettings(),
+    val transform: TransformSettings = TransformSettings(),
+    val crop: CropSettings = CropSettings(),
+    val mask: MaskSettings = MaskSettings(),
+    val motionBlur: MotionBlurSettings = MotionBlurSettings(),
+    val stabilize: StabilizeMode = StabilizeMode.OFF,
+    val animation: AnimationSettings = AnimationSettings(),
+    val keyframes: List<KeyframeNode> = emptyList(),
+) {
+    fun baseDurationMs(): Long = if (isFrozen) {
+        freezeDurationMs.coerceAtLeast(500L)
+    } else {
+        (trimEndMs - trimStartMs).coerceAtLeast(250L)
+    }
+
+    fun timelineDurationMs(): Long {
+        val spd = speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
+        return (baseDurationMs() / spd).toLong().coerceAtLeast(250L)
+    }
+}
+
+data class ClipTimelineSpan(
+    val clip: VideoClipSegment,
+    val startMs: Long,
+    val endMs: Long,
+)
+
+fun isTimelineItemActiveAt(
+    startMs: Long,
+    endMs: Long,
+    playheadMs: Long,
+    hasNextContiguous: Boolean = false,
+): Boolean {
+    if (endMs <= startMs) return false
+    return if (hasNextContiguous) {
+        playheadMs >= startMs && playheadMs < endMs
+    } else {
+        playheadMs in startMs..endMs
+    }
+}
+
+fun findActiveSpanIndex(spans: List<ClipTimelineSpan>, playheadMs: Long): Int {
+    for (i in spans.indices) {
+        val span = spans[i]
+        val hasNextContiguous = i < spans.lastIndex &&
+            abs(spans[i + 1].startMs - span.endMs) <= 20L
+        if (isTimelineItemActiveAt(span.startMs, span.endMs, playheadMs, hasNextContiguous)) {
+            return i
+        }
+    }
+    return -1
+}
