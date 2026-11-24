@@ -47,6 +47,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -55,6 +56,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -79,6 +81,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -88,6 +91,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AdjustSettings
@@ -109,11 +113,13 @@ import com.example.data.model.SpeedSettings
 import com.example.data.model.StabilizeMode
 import com.example.data.model.TextKeyframeEvaluator
 import com.example.data.model.TextTrackItem
+import com.example.data.model.TimelineSnapshot
 import com.example.data.model.TransformSettings
 import com.example.data.model.TransitionType
 import com.example.data.model.VideoClipSegment
 import com.example.data.model.VolumeKeyframeEvaluator
 import com.example.data.model.findActiveSpanIndex
+import com.example.data.model.findPreviewSpanIndex
 import com.example.data.model.isTimelineItemActiveAt
 import com.example.domain.video.ExportConfig
 import com.example.domain.video.ExportUiState
@@ -152,6 +158,9 @@ fun StudioScreen(
     canvasFitMode: CanvasFitMode,
     selectedVideo: VideoMetadata?,
     filmstrip: List<ImageBitmap>,
+    clipThumbnails: Map<String, List<ImageBitmap>>,
+    autosaveStatus: AutosaveStatus,
+    reverseProgress: ReverseProgressState?,
     selectedClipId: String?,
     selectedOverlayId: String?,
     selectedEffectId: String?,
@@ -205,6 +214,8 @@ fun StudioScreen(
     onDeleteClip: () -> Unit,
     onFreezeClip: () -> Unit,
     onReverseClip: () -> Unit,
+    onReverseMultipleClips: (List<String>, Boolean, Boolean) -> Unit,
+    onResetClipAll: () -> Unit,
     onMoveClipToOverlay: () -> Unit,
     onToggleMuteClip: (String) -> Unit,
     onToggleBeat: () -> Unit,
@@ -272,8 +283,8 @@ fun StudioScreen(
     val density = LocalDensity.current
     val presetsList = (presetsState as? UiState.Success)?.data.orEmpty()
 
-    val playingSpanIdx = findActiveSpanIndex(spans, playheadMs)
-    val hasActiveClipAtPlayhead = playingSpanIdx >= 0
+    val playingSpanIdx = findPreviewSpanIndex(spans, playheadMs)
+    val hasActiveClipAtPlayhead = playingSpanIdx >= 0 && selectedVideo != null
     val previewSpan = if (playingSpanIdx >= 0) spans[playingSpanIdx] else spans.firstOrNull()
     val toolbarSpan = (selectedClipId?.let { id -> spans.firstOrNull { it.clip.id == id } }
         ?: previewSpan
@@ -283,11 +294,12 @@ fun StudioScreen(
     val localPlayheadMs = (playheadMs - toolbarSpan.startMs).coerceIn(0L, activeClip.timelineDurationMs())
     val previewLocalMs = (playheadMs - (previewSpan?.startMs ?: 0L)).coerceIn(0L, previewClip.timelineDurationMs())
     val previewEvalTransform = remember(
+        previewClip.id,
         previewClip.keyframes,
         previewClip.transform,
         previewClip.opacity,
+        previewClip.adjust,
         previewLocalMs,
-        snapshot.adjust,
         snapshot.filterIntensity,
     ) {
         KeyframeEvaluator.evaluate(
@@ -295,7 +307,7 @@ fun StudioScreen(
             localTimeMs = previewLocalMs,
             baseTransform = previewClip.transform,
             baseOpacity = previewClip.opacity,
-            baseAdjust = snapshot.adjust,
+            baseAdjust = previewClip.adjust,
             baseFilterIntensity = snapshot.filterIntensity,
         )
     }
@@ -374,7 +386,7 @@ fun StudioScreen(
     LaunchedEffect(snapshot, previewClip, currentTimelineOffsetMs, bypassEffects) {
         shaderParamsRef.value = VideoEffectsEngine.makeShaderParams(
             clip = previewClip,
-            adjust = snapshot.adjust,
+            adjust = previewClip.adjust,
             filterPreset = snapshot.activePreset,
             filterIntensity = snapshot.filterIntensity,
             effectLayers = snapshot.effectLayers,
@@ -386,7 +398,8 @@ fun StudioScreen(
 
     val exoPlayer = remember(context) {
         ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ALL
+            repeatMode = Player.REPEAT_MODE_OFF
+            setSeekParameters(SeekParameters.EXACT)
         }
     }
     val audioPlayer = remember(context) {
@@ -402,18 +415,21 @@ fun StudioScreen(
         }
     }
 
-    // Bind media items in timeline order when video/clip trims or splits change, restoring exact playhead position
+    // Bind media items in timeline order (using effective/reversed media + exact trims), restoring exact playhead frame
     LaunchedEffect(selectedVideo?.uri, spans) {
         val primaryUri = selectedVideo?.uri ?: return@LaunchedEffect
         val items = spans.map { sp ->
             val clip = sp.clip
-            val u = clip.sourceUriString?.let { runCatching { android.net.Uri.parse(it) }.getOrNull() } ?: primaryUri
+            val u = clip.effectiveUriString()?.let { runCatching { android.net.Uri.parse(it) }.getOrNull() } ?: primaryUri
+            val effStart = clip.effectiveTrimStartMs().coerceAtLeast(0L)
+            val effEnd = clip.effectiveTrimEndMs().coerceAtLeast(effStart + 250L)
+            val effSrcDur = clip.effectiveSourceDurationMs().coerceAtLeast(effEnd)
             val mb = MediaItem.Builder().setUri(u)
-            if (clip.trimStartMs > 30L || clip.trimEndMs < clip.sourceDurationMs - 30L) {
+            if (effStart > 30L || effEnd < effSrcDur - 30L) {
                 mb.setClippingConfiguration(
                     MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(clip.trimStartMs.coerceAtLeast(0L))
-                        .setEndPositionMs(clip.trimEndMs.coerceAtLeast(clip.trimStartMs + 250L))
+                        .setStartPositionMs(effStart)
+                        .setEndPositionMs(effEnd)
                         .build()
                 )
             }
@@ -422,29 +438,35 @@ fun StudioScreen(
         val wasPlaying = isPlaying
         exoPlayer.setMediaItems(items, false)
         exoPlayer.prepare()
-        val curIdx = findActiveSpanIndex(spans, latestPlayheadMs)
+        val curIdx = findPreviewSpanIndex(spans, latestPlayheadMs)
         if (curIdx >= 0 && curIdx < items.size) {
-            val localPos = (latestPlayheadMs - spans[curIdx].startMs).coerceAtLeast(0L)
-            exoPlayer.seekTo(curIdx, localPos)
+            val sp = spans[curIdx]
+            val spd = sp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+            val localTimeline = (latestPlayheadMs - sp.startMs).coerceIn(0L, (sp.endMs - sp.startMs).coerceAtLeast(1L))
+            val localMedia = (localTimeline * spd).toLong().coerceAtLeast(0L)
+            exoPlayer.seekTo(curIdx, localMedia)
         }
-        exoPlayer.playWhenReady = wasPlaying && curIdx >= 0
+        exoPlayer.playWhenReady = wasPlaying && findActiveSpanIndex(spans, latestPlayheadMs) >= 0
     }
 
-    // Attach GPU Effects pipeline (Overlays & Texts render interactively in Compose above PlayerView so editing/dragging never stutters!)
+    // Attach GPU Effects pipeline per previewClip (Overlays & Texts render interactively above PlayerView!)
     LaunchedEffect(
         snapshot.activePreset,
         snapshot.filterIntensity,
-        snapshot.adjust.rgbCurves,
-        snapshot.adjust.hsl,
-        snapshot.adjust.colorWheel,
-        snapshot.adjust.highlights,
-        snapshot.adjust.shadows,
-        snapshot.adjust.whites,
-        snapshot.adjust.blacks,
-        snapshot.adjust.brilliance,
-        snapshot.adjust.fade,
+        previewClip.id,
+        previewClip.adjust.rgbCurves,
+        previewClip.adjust.hsl,
+        previewClip.adjust.colorWheel,
+        previewClip.adjust.highlights,
+        previewClip.adjust.shadows,
+        previewClip.adjust.whites,
+        previewClip.adjust.blacks,
+        previewClip.adjust.brilliance,
+        previewClip.adjust.fade,
         previewClip.stabilize,
         previewClip.crop,
+        previewClip.cutFlashPunchOnStart,
+        previewClip.isReversed,
         bypassEffects,
         selectedVideo?.uri,
     ) {
@@ -457,7 +479,7 @@ fun StudioScreen(
             effectLayers = snapshot.effectLayers,
             overlays = snapshot.overlays,
             texts = snapshot.textTracks,
-            adjust = snapshot.adjust,
+            adjust = previewClip.adjust,
             filterPreset = snapshot.activePreset,
             filterIntensity = snapshot.filterIntensity,
             shaderParamsProvider = { shaderParamsRef.value },
@@ -465,13 +487,21 @@ fun StudioScreen(
         )
         exoPlayer.setVideoEffects(fx)
         if (!isPlaying) {
-            exoPlayer.seekTo(exoPlayer.currentPosition)
+            val targetIdx = findPreviewSpanIndex(spans, playheadMs)
+            if (targetIdx in spans.indices) {
+                val sp = spans[targetIdx]
+                val spd = sp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+                val localTimeline = (playheadMs - sp.startMs).coerceIn(0L, (sp.endMs - sp.startMs).coerceAtLeast(1L))
+                val localMedia = (localTimeline * spd).toLong().coerceAtLeast(0L)
+                exoPlayer.seekTo(targetIdx, localMedia)
+            }
         }
     }
 
-    // Immediate frame refresh for real-time shader uniforms when paused
+    // Immediate frame refresh & exact playhead synchronization when paused
     LaunchedEffect(
-        snapshot.adjust,
+        previewClip.id,
+        previewClip.adjust,
         snapshot.effectLayers,
         previewClip.transform,
         previewClip.mask,
@@ -480,9 +510,17 @@ fun StudioScreen(
         previewClip.opacity,
         previewClip.keyframes,
         playheadMs,
+        spans,
     ) {
-        if (selectedVideo != null && !isPlaying && hasActiveClipAtPlayhead) {
-            exoPlayer.seekTo(exoPlayer.currentPosition)
+        if (selectedVideo != null && !isPlaying) {
+            val targetIdx = findPreviewSpanIndex(spans, playheadMs)
+            if (targetIdx in spans.indices) {
+                val sp = spans[targetIdx]
+                val spd = sp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+                val localTimeline = (playheadMs - sp.startMs).coerceIn(0L, (sp.endMs - sp.startMs).coerceAtLeast(1L))
+                val localMedia = (localTimeline * spd).toLong().coerceAtLeast(0L)
+                exoPlayer.seekTo(targetIdx, localMedia)
+            }
         }
     }
 
@@ -539,7 +577,7 @@ fun StudioScreen(
         }
     }
 
-    // Master playback timeline loop handling contiguous split clips AND gaps between dragged clips
+    // Master playback timeline loop handling contiguous/split clips, speed multiplier, gaps, and smooth end-to-end playback
     LaunchedEffect(isPlaying, selectedVideo?.uri) {
         if (!isPlaying || selectedVideo == null) {
             exoPlayer.pause()
@@ -548,20 +586,23 @@ fun StudioScreen(
         var lastSpanIdx = findActiveSpanIndex(latestSpans, latestPlayheadMs)
         while (isPlaying) {
             val spList = latestSpans
-            val durTotal = latestTotalDurationMs
+            val durTotal = latestTotalDurationMs.coerceAtLeast(1_000L)
             val curPos = latestPlayheadMs
             val activeIdx = findActiveSpanIndex(spList, curPos)
 
             if (activeIdx >= 0) {
+                val activeSp = spList[activeIdx]
+                val spd = activeSp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
                 if (exoPlayer.currentMediaItemIndex != activeIdx) {
-                    val localPos = (curPos - spList[activeIdx].startMs).coerceAtLeast(0L)
-                    exoPlayer.seekTo(activeIdx, localPos)
+                    val localMedia = ((curPos - activeSp.startMs).coerceAtLeast(0L) * spd).toLong()
+                    exoPlayer.seekTo(activeIdx, localMedia)
                 }
-                if (!exoPlayer.isPlaying) {
+                if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_ENDED) {
                     exoPlayer.play()
                 }
                 val exoIdx = exoPlayer.currentMediaItemIndex.coerceIn(0, spList.lastIndex)
-                // If ExoPlayer stepped past a clip that had a gap before the next clip, enter gap playback
+                val exoSp = spList[exoIdx]
+                val exoSpd = exoSp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
                 if (lastSpanIdx in spList.indices && exoIdx > lastSpanIdx &&
                     spList[exoIdx].startMs > spList[lastSpanIdx].endMs + 40L &&
                     curPos < spList[exoIdx].startMs - 40L
@@ -570,27 +611,41 @@ fun StudioScreen(
                     val nextCur = (spList[lastSpanIdx].endMs + 40L).coerceAtMost(durTotal)
                     latestOnUpdatePlayhead(nextCur)
                     lastSpanIdx = -1
+                } else if (exoPlayer.playbackState == Player.STATE_ENDED || curPos >= durTotal - 30L) {
+                    latestOnUpdatePlayhead(0L)
+                    lastSpanIdx = findActiveSpanIndex(spList, 0L)
+                    if (lastSpanIdx >= 0) {
+                        val sp0 = spList[lastSpanIdx]
+                        val spd0 = sp0.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+                        exoPlayer.seekTo(lastSpanIdx, ((0L - sp0.startMs).coerceAtLeast(0L) * spd0).toLong())
+                        exoPlayer.play()
+                    }
                 } else {
-                    val nextTimelinePos = (spList[exoIdx].startMs + exoPlayer.currentPosition).coerceIn(0L, durTotal)
+                    val timelineOffsetInSpan = (exoPlayer.currentPosition / exoSpd).toLong()
+                    val nextTimelinePos = (exoSp.startMs + timelineOffsetInSpan).coerceIn(0L, durTotal)
                     latestOnUpdatePlayhead(nextTimelinePos)
                     lastSpanIdx = exoIdx
                 }
             } else {
-                // Timeline gap (no video clip under playhead) or ending card
                 if (exoPlayer.isPlaying) exoPlayer.pause()
                 val nextCur = curPos + 40L
                 if (nextCur >= durTotal) {
                     latestOnUpdatePlayhead(0L)
                     lastSpanIdx = findActiveSpanIndex(spList, 0L)
                     if (lastSpanIdx >= 0) {
-                        exoPlayer.seekTo(lastSpanIdx, (0L - spList[lastSpanIdx].startMs).coerceAtLeast(0L))
+                        val sp0 = spList[lastSpanIdx]
+                        val spd0 = sp0.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+                        exoPlayer.seekTo(lastSpanIdx, ((0L - sp0.startMs).coerceAtLeast(0L) * spd0).toLong())
+                        exoPlayer.play()
                     }
                 } else {
                     latestOnUpdatePlayhead(nextCur)
                     val enteringIdx = findActiveSpanIndex(spList, nextCur)
                     if (enteringIdx >= 0) {
                         lastSpanIdx = enteringIdx
-                        exoPlayer.seekTo(enteringIdx, (nextCur - spList[enteringIdx].startMs).coerceAtLeast(0L))
+                        val entSp = spList[enteringIdx]
+                        val entSpd = entSp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+                        exoPlayer.seekTo(enteringIdx, ((nextCur - entSp.startMs).coerceAtLeast(0L) * entSpd).toLong())
                         exoPlayer.play()
                     }
                 }
@@ -634,6 +689,26 @@ fun StudioScreen(
                 modifier = Modifier.minimumInteractiveComponentSize().testTag("top_search_effects"),
             ) {
                 Icon(Icons.Filled.Search, contentDescription = "Search Effects & Tools", tint = Color.White)
+            }
+            if (autosaveStatus != AutosaveStatus.IDLE) {
+                Surface(
+                    color = ObsidianSurfaceContainer,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .border(
+                            1.dp,
+                            if (autosaveStatus == AutosaveStatus.SAVED) CyberCyan.copy(alpha = 0.45f) else OutlineSubtle,
+                            RoundedCornerShape(8.dp),
+                        )
+                        .testTag("autosave_status_pill"),
+                ) {
+                    Text(
+                        text = if (autosaveStatus == AutosaveStatus.SAVING) "Saving..." else "Autosaved",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (autosaveStatus == AutosaveStatus.SAVED) CyberCyan else TextSecondary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
             }
             Spacer(modifier = Modifier.weight(1f))
             Surface(
@@ -701,6 +776,9 @@ fun StudioScreen(
 
                 // A. Video Player Layer (TextureView + GPU/Compose graphicsLayer for live 60fps Pos/Zoom/Rotate/Mirror/Keyframe preview!)
                 if (selectedVideo != null) {
+                    val punchFraction = if (previewClip.cutFlashPunchOnStart && previewLocalMs in 0L..55L) {
+                        1f - (previewLocalMs / 55f)
+                    } else 0f
                     AndroidView(
                         factory = { ctx ->
                             (LayoutInflater.from(ctx).inflate(com.example.R.layout.luna_player_view, null) as PlayerView).apply {
@@ -728,7 +806,8 @@ fun StudioScreen(
                             .fillMaxSize()
                             .alpha(if (hasActiveClipAtPlayhead) previewEvalTransform.opacity.coerceIn(0f, 1f) else 0f)
                             .graphicsLayer {
-                                val scale = (previewEvalTransform.zoomPercent / 100f).coerceIn(0.25f, 5f) * previewClip.crop.scaleCrop
+                                val punchScale = 1f + punchFraction * 0.08f
+                                val scale = (previewEvalTransform.zoomPercent / 100f).coerceIn(0.25f, 5f) * previewClip.crop.scaleCrop * punchScale
                                 val mirrorSign = if (previewClip.transform.mirrorHorizontal) -1f else 1f
                                 translationX = previewEvalTransform.posX * halfW
                                 translationY = -previewEvalTransform.posY * halfH
@@ -737,6 +816,13 @@ fun StudioScreen(
                                 rotationZ = previewEvalTransform.rotateDeg + previewClip.crop.rotateDeg
                             },
                     )
+                    if (punchFraction > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.White.copy(alpha = (punchFraction * 0.72f).coerceIn(0f, 0.75f))),
+                        )
+                    }
                 } else {
                     Column(
                         modifier = Modifier
@@ -755,9 +841,10 @@ fun StudioScreen(
                     }
                 }
 
-                // B. Active Overlays / Images Layer (rendered ABOVE PlayerView — both split halves show automatically!)
+                // B. Active Overlays / Images Layer (rendered ABOVE PlayerView strictly within [startMs, endMs)!)
                 activeOverlays.forEach { ov ->
-                    val frameStep = if (ov.isVideo) ((playheadMs - ov.startMs).coerceAtLeast(0L) / 120L) else 0L
+                    key(ov.id) {
+                        val frameStep = if (ov.isVideo) ((playheadMs - ov.startMs).coerceAtLeast(0L) / 120L) else 0L
                     val processedBitmap by produceState<ImageBitmap?>(
                         initialValue = null,
                         ov.id,
@@ -830,45 +917,48 @@ fun StudioScreen(
                             )
                         }
                     }
+                    }
                 }
 
-                // C. Active Texts & Captions Layer (rendered ABOVE PlayerView & Overlays — evaluates Text Keyframes at 60fps!)
+                // C. Active Texts & Captions Layer (strictly visible ONLY between startMs and endMs!)
                 activeTexts.forEach { tx ->
-                    val localTxMs = (playheadMs - tx.startMs).coerceIn(0L, (tx.endMs - tx.startMs).coerceAtLeast(1L))
-                    val evalTx = TextKeyframeEvaluator.evaluate(tx.keyframes, localTxMs, tx)
-                    val isSel = tx.id == selectedTextId
-                    val bgModifier = when {
-                        isSel -> Modifier
-                            .border(1.5.dp, Color.White, RoundedCornerShape(6.dp))
-                            .background(ObsidianBackground.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
-                        tx.isCaption -> Modifier.background(ObsidianBackground.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
-                        else -> Modifier
-                    }
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .offset {
-                                IntOffset((evalTx.posX * halfW).roundToInt(), (-evalTx.posY * halfH).roundToInt())
-                            }
-                            .graphicsLayer {
-                                val s = evalTx.scale.coerceIn(0.35f, 3.5f)
-                                scaleX = s
-                                scaleY = s
-                                rotationZ = evalTx.rotationDeg
-                                alpha = evalTx.opacity.coerceIn(0f, 1f)
-                            }
-                            .then(bgModifier)
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                            .testTag("preview_text_${tx.id}"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = tx.text,
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = if (tx.bold) FontWeight.Bold else FontWeight.Normal,
-                            ),
-                            color = Color(tx.colorArgb),
-                        )
+                    key(tx.id) {
+                        val localTxMs = (playheadMs - tx.startMs).coerceIn(0L, (tx.endMs - tx.startMs).coerceAtLeast(1L))
+                        val evalTx = TextKeyframeEvaluator.evaluate(tx.keyframes, localTxMs, tx)
+                        val isSel = tx.id == selectedTextId
+                        val bgModifier = when {
+                            isSel -> Modifier
+                                .border(1.5.dp, Color.White, RoundedCornerShape(6.dp))
+                                .background(ObsidianBackground.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                            tx.isCaption -> Modifier.background(ObsidianBackground.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
+                            else -> Modifier
+                        }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .offset {
+                                    IntOffset((evalTx.posX * halfW).roundToInt(), (-evalTx.posY * halfH).roundToInt())
+                                }
+                                .graphicsLayer {
+                                    val s = evalTx.scale.coerceIn(0.35f, 3.5f)
+                                    scaleX = s
+                                    scaleY = s
+                                    rotationZ = evalTx.rotationDeg
+                                    alpha = evalTx.opacity.coerceIn(0f, 1f)
+                                }
+                                .then(bgModifier)
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                                .testTag("preview_text_${tx.id}"),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = tx.text,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = if (tx.bold) FontWeight.Bold else FontWeight.Normal,
+                                ),
+                                color = Color(tx.colorArgb),
+                            )
+                        }
                     }
                 }
 
@@ -1062,6 +1152,9 @@ fun StudioScreen(
                     if (selectedVideo == null) {
                         onPickVideo()
                     } else {
+                        if (!isPlaying && playheadMs >= totalDurationMs - 30L) {
+                            onUpdatePlayhead(0L)
+                        }
                         isPlaying = !isPlaying
                     }
                 },
@@ -1142,6 +1235,7 @@ fun StudioScreen(
             audioTracks = snapshot.audioTracks,
             textTracks = snapshot.textTracks,
             filmstrip = filmstrip,
+            clipThumbnails = clipThumbnails,
             hasEndingCard = snapshot.hasEndingCard,
             playheadMs = playheadMs,
             totalDurationMs = totalDurationMs,
@@ -1156,10 +1250,13 @@ fun StudioScreen(
             onUpdatePlayhead = { ms ->
                 onUpdatePlayhead(ms)
                 if (selectedVideo != null) {
-                    val spanIdx = findActiveSpanIndex(spans, ms)
-                    if (spanIdx >= 0) {
-                        val localPos = (ms - spans[spanIdx].startMs).coerceAtLeast(0L)
-                        exoPlayer.seekTo(spanIdx, localPos)
+                    val spanIdx = findPreviewSpanIndex(spans, ms)
+                    if (spanIdx in spans.indices) {
+                        val sp = spans[spanIdx]
+                        val spd = sp.clip.speed.effectiveSpeedMultiplier().coerceIn(0.1f, 8f)
+                        val localTimeline = (ms - sp.startMs).coerceIn(0L, (sp.endMs - sp.startMs).coerceAtLeast(1L))
+                        val localMedia = (localTimeline * spd).toLong().coerceAtLeast(0L)
+                        exoPlayer.seekTo(spanIdx, localMedia)
                     }
                 }
             },
@@ -1264,6 +1361,7 @@ fun StudioScreen(
                             onMoveToOverlay = onMoveClipToOverlay,
                             onFreeze = onFreezeClip,
                             onReverseToggle = onReverseClip,
+                            onResetClipAll = onResetClipAll,
                             onOpenSheet = { activeSheet = it },
                         )
                     }
@@ -1365,7 +1463,7 @@ fun StudioScreen(
                             localTimeMs = localPlayheadMs,
                             baseTransform = activeClip.transform,
                             baseOpacity = activeClip.opacity,
-                            baseAdjust = snapshot.adjust,
+                            baseAdjust = activeClip.adjust,
                             baseFilterIntensity = snapshot.filterIntensity,
                         )
                         val evalTr = TransformSettings(
@@ -1462,7 +1560,7 @@ fun StudioScreen(
                 )
             }
             ActiveEditorSheet.ADJUST -> AdjustToolSheet(
-                adjust = snapshot.adjust,
+                adjust = activeClip.adjust,
                 onUpdateAdjust = onUpdateAdjust,
                 onSmartAuto = onAutoAdjust,
                 onReset = onResetAdjust,
@@ -1511,6 +1609,62 @@ fun StudioScreen(
                 onSelectBg = onSelectBg,
                 onClose = { activeSheet = ActiveEditorSheet.NONE },
             )
+            ActiveEditorSheet.REVERSE -> ReverseClipsSheet(
+                clips = snapshot.clips,
+                clipThumbnails = clipThumbnails,
+                reverseProgress = reverseProgress,
+                onReverseSelected = { ids, revAudio ->
+                    onReverseMultipleClips(ids, false, revAudio)
+                },
+                onReverseAll = { revAudio ->
+                    val allIds = snapshot.clips.filter { !it.sourceUriString.isNullOrBlank() }.map { it.id }
+                    onReverseMultipleClips(allIds, true, revAudio)
+                },
+                onClose = { activeSheet = ActiveEditorSheet.NONE },
+            )
+        }
+    }
+
+    if (reverseProgress != null && activeSheet != ActiveEditorSheet.REVERSE) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                color = ObsidianSurfaceHigh,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth(0.84f)
+                    .border(1.dp, CyberCyan.copy(alpha = 0.6f), RoundedCornerShape(16.dp)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Reversing ${reverseProgress.clipName} (${reverseProgress.currentClipIndex}/${reverseProgress.totalClips})",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    LinearProgressIndicator(
+                        progress = { (reverseProgress.percent / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(4.dp)),
+                        color = CyberCyan,
+                        trackColor = ObsidianSurfaceContainer,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(reverseProgress.statusLabel, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Text("${reverseProgress.percent}%", style = MaterialTheme.typography.labelMedium, color = CyberCyan)
+                    }
+                }
+            }
         }
     }
 

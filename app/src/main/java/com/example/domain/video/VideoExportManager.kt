@@ -3,6 +3,8 @@ package com.example.domain.video
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -93,17 +95,14 @@ class VideoExportManager(private val context: Context) {
                 seqBuilder.addGap((span.startMs - cursorMs) * 1_000L)
                 cursorMs = span.startMs
             }
-            val clipUri = clip.sourceUriString?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            val clipUri = clip.effectiveUriString()?.let { runCatching { Uri.parse(it) }.getOrNull() }
                 ?: sourceVideoUri
             val mediaBuilder = MediaItem.Builder().setUri(clipUri)
 
-            val trimStart = if (clip.isFrozen) clip.freezeAtMs.coerceAtLeast(0L) else clip.trimStartMs.coerceAtLeast(0L)
-            val trimEnd = if (clip.isFrozen) {
-                (clip.freezeAtMs + 250L).coerceAtMost(clip.sourceDurationMs.coerceAtLeast(300L))
-            } else {
-                clip.trimEndMs.coerceAtLeast(trimStart + 250L)
-            }
-            if (trimStart > 30L || trimEnd < clip.sourceDurationMs - 30L) {
+            val trimStart = clip.effectiveTrimStartMs()
+            val trimEnd = clip.effectiveTrimEndMs()
+            val effSrcDur = clip.effectiveSourceDurationMs()
+            if (trimStart > 30L || trimEnd < effSrcDur - 30L) {
                 mediaBuilder.setClippingConfiguration(
                     MediaItem.ClippingConfiguration.Builder()
                         .setStartPositionMs(trimStart)
@@ -121,7 +120,7 @@ class VideoExportManager(private val context: Context) {
                 effectLayers = effectLayers,
                 overlays = overlays,
                 texts = texts,
-                adjust = adjust,
+                adjust = clip.adjust,
                 filterPreset = activePreset,
                 filterIntensity = filterIntensity,
                 config = config,
@@ -328,6 +327,23 @@ class VideoExportManager(private val context: Context) {
                 } finally {
                     runCatching { retriever.release() }
                 }
+                if (durationMs <= 0L) {
+                    val extractor = MediaExtractor()
+                    try {
+                        extractor.setDataSource(context, uri, null)
+                        for (i in 0 until extractor.trackCount) {
+                            val fmt = extractor.getTrackFormat(i)
+                            val mime = fmt.getString(MediaFormat.KEY_MIME).orEmpty()
+                            if (mime.startsWith("video/") && fmt.containsKey(MediaFormat.KEY_DURATION)) {
+                                val us = fmt.getLong(MediaFormat.KEY_DURATION)
+                                if (us > 0L) durationMs = maxOf(durationMs, us / 1_000L)
+                            }
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        runCatching { extractor.release() }
+                    }
+                }
                 VideoMetadata(
                     uri = uri,
                     displayName = displayName,
@@ -341,15 +357,23 @@ class VideoExportManager(private val context: Context) {
             context: Context,
             uri: Uri,
             durationMs: Long,
-            count: Int = 10,
+            trimStartMs: Long = 0L,
+            trimEndMs: Long = durationMs,
+            isReversed: Boolean = false,
+            count: Int = ((trimEndMs - trimStartMs).coerceAtLeast(durationMs.coerceAtLeast(1_000L)) / 1_000L).toInt().coerceIn(3, 28),
         ): List<ImageBitmap> = withContext(Dispatchers.IO) {
             val retriever = MediaMetadataRetriever()
             val results = mutableListOf<ImageBitmap>()
             try {
                 retriever.setDataSource(context, uri)
-                val safeDurUs = durationMs.coerceAtLeast(1_000L) * 1_000L
-                for (i in 0 until count) {
-                    val timeUs = (safeDurUs * i) / count.coerceAtLeast(1)
+                val safeStartMs = trimStartMs.coerceAtLeast(0L)
+                val safeEndMs = trimEndMs.coerceAtLeast(safeStartMs + 250L)
+                val spanUs = (safeEndMs - safeStartMs).coerceAtLeast(250L) * 1_000L
+                val safeCount = count.coerceIn(1, 32)
+                for (i in 0 until safeCount) {
+                    val frac = if (safeCount <= 1) 0.5f else i.toFloat() / safeCount.toFloat()
+                    val effectiveFrac = if (isReversed) (1f - frac) else frac
+                    val timeUs = safeStartMs * 1_000L + (spanUs * effectiveFrac).toLong()
                     val frame: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                         retriever.getScaledFrameAtTime(
                             timeUs,

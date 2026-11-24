@@ -23,8 +23,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -128,6 +130,7 @@ fun CapCutTimelineArea(
     audioTracks: List<AudioTrackItem>,
     textTracks: List<TextTrackItem>,
     filmstrip: List<ImageBitmap>,
+    clipThumbnails: Map<String, List<ImageBitmap>>,
     hasEndingCard: Boolean,
     playheadMs: Long,
     totalDurationMs: Long,
@@ -237,7 +240,14 @@ fun CapCutTimelineArea(
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = 10.dp),
         ) {
-            // 1. Time Ruler row
+            // 1. Time Ruler row (adaptive step so timestamps never overlap/duplicate on 1s or long clips)
+            val minLabelGapPx = with(density) { 48.dp.toPx() }
+            val secStep = remember(pxPerSec, minLabelGapPx) {
+                listOf(1, 2, 5, 10, 15, 30, 60).firstOrNull { it * pxPerSec >= minLabelGapPx } ?: 60
+            }
+            val maxTimelineSec = remember(totalDurationMs) {
+                ((totalDurationMs + 999L) / 1000L).toInt().coerceAtLeast(1)
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -245,14 +255,12 @@ fun CapCutTimelineArea(
                     .background(ObsidianBackground),
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    val secStep = if (timelineZoom < 0.8f) 2 else 1
-                    val maxSec = (totalDurationMs / 1000L).toInt() + 4
-                    for (s in 0..maxSec) {
+                    for (s in 0..maxTimelineSec) {
                         val x = playheadXOffsetPx + s * pxPerSec
                         if (x in -20f..(size.width + 20f)) {
                             val major = s % secStep == 0
                             drawLine(
-                                color = Color.White.copy(alpha = if (major) 0.5f else 0.2f),
+                                color = Color.White.copy(alpha = if (major) 0.55f else 0.22f),
                                 start = Offset(x, size.height - if (major) 10.dp.toPx() else 5.dp.toPx()),
                                 end = Offset(x, size.height),
                                 strokeWidth = 1.dp.toPx(),
@@ -260,16 +268,14 @@ fun CapCutTimelineArea(
                         }
                     }
                 }
-                val secStep = if (timelineZoom < 0.8f) 2 else 1
-                val maxLabelSec = (totalDurationMs / 1000L).toInt() + 1
-                for (s in 0..maxLabelSec step secStep) {
+                for (s in 0..maxTimelineSec step secStep) {
                     val xPx = playheadXOffsetPx + s * pxPerSec
-                    if (xPx in 8f..(timelineWidthPx - 36f)) {
+                    if (xPx in 12f..(timelineWidthPx - 40f)) {
                         Text(
-                            text = String.format(Locale.US, "00:%02d", s),
+                            text = formatRulerSeconds(s),
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                             color = TextSecondary,
-                            modifier = Modifier.offset { IntOffset((xPx - 12f).roundToInt(), 2) },
+                            modifier = Modifier.offset { IntOffset((xPx - 14f).roundToInt(), 2) },
                         )
                     }
                 }
@@ -299,7 +305,7 @@ fun CapCutTimelineArea(
                         Box(
                             modifier = Modifier
                                 .offset { IntOffset(startPx.roundToInt(), 2) }
-                                .width(clipWidthDp)
+                                .requiredWidth(clipWidthDp)
                                 .height(54.dp)
                                 .zIndex(if (isDraggingBody) 3f else if (isSel) 2f else 1f)
                                 .clip(RoundedCornerShape(8.dp))
@@ -338,12 +344,18 @@ fun CapCutTimelineArea(
                                 }
                                 .testTag("timeline_clip_${laneIdx}_$idx"),
                         ) {
-                            // Filmstrip thumbnail tiles
+                            // Full-duration filmstrip thumbnail tiles (never capped at 12 tiles / ~7s!)
+                            val clipThumbs = clipThumbnails[clip.id]?.takeIf { it.isNotEmpty() } ?: filmstrip
                             Row(modifier = Modifier.fillMaxSize()) {
-                                val tileCount = (clipWidthDp / 42.dp).roundToInt().coerceIn(2, 12)
+                                val tileCount = (clipWidthDp / 42.dp).roundToInt().coerceIn(1, 140)
                                 for (t in 0 until tileCount) {
-                                    if (filmstrip.isNotEmpty()) {
-                                        val bmp = filmstrip[(t * filmstrip.size / tileCount).coerceIn(0, filmstrip.lastIndex)]
+                                    if (clipThumbs.isNotEmpty()) {
+                                        val rawIdx = ((t + 0.5f) / tileCount * clipThumbs.size).toInt()
+                                            .coerceIn(0, clipThumbs.lastIndex)
+                                        val bmpIdx = if (clip.isReversed && clipThumbnails[clip.id] == null) {
+                                            clipThumbs.lastIndex - rawIdx
+                                        } else rawIdx
+                                        val bmp = clipThumbs[bmpIdx]
                                         Image(
                                             bitmap = bmp,
                                             contentDescription = null,
@@ -417,10 +429,10 @@ fun CapCutTimelineArea(
                                     Text(
                                         text = when {
                                             clip.isFrozen -> "Freeze"
-                                            clip.isReversed -> "Rev"
+                                            clip.isReversed -> "REVERSED"
                                             else -> String.format(Locale.US, "%.1fx", clip.speed.effectiveSpeedMultiplier())
                                         },
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
                                         color = CyberCyan,
                                     )
                                 }
@@ -481,6 +493,7 @@ fun CapCutTimelineArea(
                         Row(
                             modifier = Modifier
                                 .offset { IntOffset(tailStartPx.roundToInt(), 0) }
+                                .wrapContentWidth(align = Alignment.Start, unbounded = true)
                                 .fillMaxHeight(),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -752,7 +765,7 @@ private fun <T> TimelineTrackLaneRow(
             Box(
                 modifier = Modifier
                     .offset { IntOffset(startPx.roundToInt(), 0) }
-                    .width(barWidthDp)
+                    .requiredWidth(barWidthDp)
                     .fillMaxHeight()
                     .zIndex(if (isDraggingBody) 3f else if (isSelected) 2f else 1f)
                     .clip(RoundedCornerShape(7.dp))
@@ -963,3 +976,9 @@ private fun androidx.compose.foundation.layout.BoxScope.TrimHandlesPair(
         Box(Modifier.width(2.dp).height(14.dp).background(ObsidianBackground))
     }
 }
+
+private fun formatRulerSeconds(sec: Int): String {
+    val s = sec.coerceAtLeast(0)
+    return String.format(Locale.US, "%02d:%02d", s / 60, s % 60)
+}
+

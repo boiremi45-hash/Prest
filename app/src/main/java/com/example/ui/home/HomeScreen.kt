@@ -1,6 +1,8 @@
 package com.example.ui.home
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Menu
@@ -49,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,9 +63,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -82,6 +89,9 @@ import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.OutlineStrong
 import com.example.ui.theme.OutlineSubtle
 import com.example.ui.theme.StudioAmber
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 @Composable
@@ -93,12 +103,14 @@ fun HomeScreen(
     onRequestCreateDialog: () -> Unit,
     onCreateProject: (String, AspectPreset, String, Int) -> Unit,
     onOpenProject: (LunaProjectSummary) -> Unit,
+    onDeleteProject: (LunaProjectSummary) -> Unit,
     onSelectTemplate: (FfxPreset) -> Unit,
     onNavigateLibrary: () -> Unit,
     onImportFfxClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val presets = (presetsState as? UiState.Success)?.data.orEmpty()
+    var pendingDeleteProject by remember { mutableStateOf<LunaProjectSummary?>(null) }
 
     LazyColumn(
         modifier = modifier
@@ -276,13 +288,68 @@ fun HomeScreen(
             }
         }
 
-        // Project Cards (Screenshot 2)
-        items(recentProjects, key = { it.id }) { project ->
-            ProjectSummaryCard(
-                project = project,
-                onClick = { onOpenProject(project) },
-            )
+        // Saved Projects List (unlimited local autosaved projects; 0 dummy projects)
+        if (recentProjects.isEmpty()) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(ObsidianSurfaceContainer)
+                        .border(1.dp, OutlineSubtle, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 18.dp, vertical = 20.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "No saved projects yet — create a project above and edits autosave automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        } else {
+            items(recentProjects, key = { it.id }) { project ->
+                ProjectSummaryCard(
+                    project = project,
+                    onClick = { onOpenProject(project) },
+                    onDeleteClick = { pendingDeleteProject = project },
+                )
+            }
         }
+    }
+
+    val toDelete = pendingDeleteProject
+    if (toDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteProject = null },
+            containerColor = ObsidianSurfaceHigh,
+            title = { Text("Delete Project?", style = MaterialTheme.typography.titleMedium, color = Color.White) },
+            text = {
+                Text(
+                    text = "Remove \"${toDelete.title}\" and its saved timeline edits from device storage?",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteProject(toDelete)
+                        pendingDeleteProject = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteProject = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 }
 
@@ -365,14 +432,23 @@ private fun TemplateCircleItem(
 private fun ProjectSummaryCard(
     project: LunaProjectSummary,
     onClick: () -> Unit,
+    onDeleteClick: () -> Unit,
 ) {
-    val totalSec = (project.durationMs / 1000L).coerceAtLeast(1L)
+    val totalSec = (project.durationMs / 1000L).coerceAtLeast(0L)
     val durationLabel = String.format(
         Locale.US,
-        "00:%02d:%02d",
+        "%02d:%02d",
         totalSec / 60L,
         totalSec % 60L,
     )
+    val thumbBitmap by produceState<ImageBitmap?>(initialValue = null, project.thumbnailPath) {
+        value = withContext(Dispatchers.IO) {
+            val path = project.thumbnailPath ?: return@withContext null
+            val f = File(path)
+            if (!f.exists()) return@withContext null
+            runCatching { BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() }.getOrNull()
+        }
+    }
 
     Row(
         modifier = Modifier
@@ -386,7 +462,7 @@ private fun ProjectSummaryCard(
             .testTag("project_card_${project.id}"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Thumbnail with duration pill (Screenshot 2)
+        // Thumbnail with duration pill
         Box(
             modifier = Modifier
                 .size(width = 96.dp, height = 82.dp)
@@ -397,14 +473,23 @@ private fun ProjectSummaryCard(
                     )
                 ),
         ) {
-            Icon(
-                imageVector = Icons.Filled.MovieFilter,
-                contentDescription = null,
-                tint = LunaMint.copy(alpha = 0.8f),
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(30.dp),
-            )
+            if (thumbBitmap != null) {
+                Image(
+                    bitmap = thumbBitmap!!,
+                    contentDescription = project.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.MovieFilter,
+                    contentDescription = null,
+                    tint = LunaMint.copy(alpha = 0.8f),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(30.dp),
+                )
+            }
             Surface(
                 color = ObsidianBackground.copy(alpha = 0.88f),
                 shape = RoundedCornerShape(6.dp),
@@ -454,6 +539,19 @@ private fun ProjectSummaryCard(
                 ProjectMetaItem(Icons.Filled.Layers, "${project.layerCount} layers")
                 ProjectMetaItem(Icons.Filled.Speed, "${project.fps}fps")
             }
+        }
+
+        IconButton(
+            onClick = onDeleteClick,
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("delete_project_${project.id}"),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.DeleteOutline,
+                contentDescription = "Delete project ${project.title}",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

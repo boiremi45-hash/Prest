@@ -1,32 +1,238 @@
 package com.example.data.repository
 
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Build
 import com.example.data.local.AppDatabase
 import com.example.data.local.ExportDao
 import com.example.data.local.PresetDao
+import com.example.data.local.ProjectDao
+import com.example.data.local.ProjectEntity
 import com.example.data.local.toEntity
+import com.example.data.model.AspectPreset
+import com.example.data.model.CanvasFitMode
 import com.example.data.model.ExportRecord
 import com.example.data.model.FfxPreset
+import com.example.data.model.LunaProjectSummary
+import com.example.data.model.PersistedProjectState
 import com.example.data.model.PresetCategory
+import com.example.data.model.TimelineSnapshot
+import com.example.data.model.computeTotalVideoDurationMs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
 class PresetRepository(
     private val presetDao: PresetDao,
     private val exportDao: ExportDao,
+    private val projectDao: ProjectDao? = null,
+    private val appContext: Context? = null,
 ) {
+    constructor(presetDao: PresetDao, exportDao: ExportDao) : this(
+        presetDao = presetDao,
+        exportDao = exportDao,
+        projectDao = null,
+        appContext = null,
+    )
+
     constructor(context: Context) : this(
         presetDao = AppDatabase.getInstance(context).presetDao(),
         exportDao = AppDatabase.getInstance(context).exportDao(),
+        projectDao = AppDatabase.getInstance(context).projectDao(),
+        appContext = context.applicationContext,
     )
+
+    private val jsonCodec = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        isLenient = true
+    }
 
     fun observePresets(): Flow<List<FfxPreset>> =
         presetDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
     fun observeExports(): Flow<List<ExportRecord>> =
         exportDao.observeAll().map { entities -> entities.map { it.toDomain() } }
+
+    fun observeProjects(): Flow<List<LunaProjectSummary>> =
+        projectDao?.observeAll()?.map { list -> list.map { it.toSummary() } } ?: flowOf(emptyList())
+
+    suspend fun getMostRecentProjectState(): PersistedProjectState? {
+        val dao = projectDao ?: return null
+        val entity = runCatching { dao.getMostRecent() }.getOrNull() ?: return null
+        return decodeProjectEntity(entity)
+    }
+
+    suspend fun loadProjectState(projectId: String): Result<PersistedProjectState?> {
+        val dao = projectDao ?: return Result.success(null)
+        return try {
+            val entity = dao.getById(projectId) ?: return Result.success(null)
+            Result.success(decodeProjectEntity(entity))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveProjectState(state: PersistedProjectState): Result<Unit> {
+        val dao = projectDao ?: return Result.success(Unit)
+        return try {
+            val existing = dao.getById(state.projectId)
+            val now = System.currentTimeMillis()
+            val createdAt = existing?.createdAtMillis?.takeIf { it > 0L } ?: now
+            val totalDur = computeTotalVideoDurationMs(state.snapshot.clips)
+            val layerCount = (
+                state.snapshot.clips.size +
+                    state.snapshot.effectLayers.size +
+                    state.snapshot.overlays.size +
+                    state.snapshot.textTracks.size +
+                    state.snapshot.audioTracks.size
+                ).coerceAtLeast(1)
+            val firstVideoName = state.snapshot.clips.firstOrNull { !it.sourceUriString.isNullOrBlank() }?.displayName
+            val snapshotJson = jsonCodec.encodeToString(state.snapshot)
+            val entity = ProjectEntity(
+                id = state.projectId,
+                title = state.title.trim().ifBlank { "Untitled Project" },
+                aspectPresetName = state.aspectPreset.name,
+                resolutionLabel = state.resolutionLabel,
+                fps = state.fps,
+                durationMs = totalDur,
+                activePresetName = state.snapshot.activePreset.name,
+                layerCount = layerCount,
+                videoDisplayName = firstVideoName,
+                thumbnailPath = state.thumbnailPath ?: existing?.thumbnailPath,
+                playheadMs = state.playheadMs.coerceIn(0L, totalDur),
+                canvasFitModeName = state.canvasFitMode.name,
+                timelineZoom = state.timelineZoom.coerceIn(0.35f, 4.0f),
+                snapshotJson = snapshotJson,
+                createdAtMillis = createdAt,
+                updatedAtMillis = now,
+            )
+            dao.upsert(entity)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteProject(projectId: String): Result<Unit> {
+        val dao = projectDao ?: return Result.success(Unit)
+        return try {
+            val existing = dao.getById(projectId)
+            dao.deleteById(projectId)
+            existing?.thumbnailPath?.let { path ->
+                runCatching { File(path).takeIf { it.exists() }?.delete() }
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun decodeProjectEntity(entity: ProjectEntity): PersistedProjectState? {
+        val snapshot = runCatching {
+            jsonCodec.decodeFromString<TimelineSnapshot>(entity.snapshotJson)
+        }.getOrNull() ?: return null
+        val aspect = runCatching { AspectPreset.valueOf(entity.aspectPresetName) }.getOrDefault(AspectPreset.RATIO_9_16)
+        val fitMode = runCatching { CanvasFitMode.valueOf(entity.canvasFitModeName) }.getOrDefault(CanvasFitMode.FIT)
+        return PersistedProjectState(
+            projectId = entity.id,
+            title = entity.title,
+            aspectPreset = aspect,
+            resolutionLabel = entity.resolutionLabel,
+            fps = entity.fps,
+            canvasFitMode = fitMode,
+            playheadMs = entity.playheadMs,
+            timelineZoom = entity.timelineZoom,
+            thumbnailPath = entity.thumbnailPath,
+            snapshot = snapshot,
+        )
+    }
+
+    suspend fun persistMediaLocally(
+        context: Context,
+        uri: Uri,
+        subDir: String = "imported",
+    ): Uri = withContext(Dispatchers.IO) {
+        if (uri.scheme == "file") {
+            val f = uri.path?.let { File(it) }
+            if (f != null && f.exists()) return@withContext uri
+        }
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        val mediaDir = File(context.filesDir, "luna_media/$subDir").apply { mkdirs() }
+        val rawName = com.example.domain.video.VideoExportManager.queryDisplayName(context, uri)
+            ?.replace(Regex("[^a-zA-Z0-9._\\-]"), "_")
+            ?: "media_${System.currentTimeMillis()}.mp4"
+        val destFile = File(mediaDir, "${UUID.randomUUID().toString().take(8)}_$rawName")
+        val copied = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            destFile.exists() && destFile.length() > 0L
+        }.getOrDefault(false)
+        if (copied) Uri.fromFile(destFile) else uri
+    }
+
+    suspend fun saveProjectThumbnail(
+        context: Context,
+        projectId: String,
+        videoUri: Uri,
+        positionMs: Long = 0L,
+    ): String? = withContext(Dispatchers.IO) {
+        val thumbDir = File(context.filesDir, "luna_thumbs").apply { mkdirs() }
+        val thumbFile = File(thumbDir, "$projectId.jpg")
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, videoUri)
+            val timeUs = (positionMs.coerceAtLeast(0L)) * 1_000L
+            val frame: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    320,
+                    240,
+                )
+            } else {
+                retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?.let { Bitmap.createScaledBitmap(it, 320, 240, true) }
+            }
+            if (frame != null) {
+                FileOutputStream(thumbFile).use { out ->
+                    frame.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                }
+                thumbFile.absolutePath
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
 
     suspend fun getPreset(presetId: String): Result<FfxPreset?> {
         return try {

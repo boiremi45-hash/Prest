@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import kotlinx.serialization.Serializable
 import java.util.UUID
 
 enum class LayerKind {
@@ -25,6 +26,7 @@ enum class BlendStyle(val label: String, val alphaDefault: Float) {
     SUBTLE("Subtle Tint", 0.35f),
 }
 
+@Serializable
 enum class AspectPreset(val label: String, val ratio: Float) {
     RATIO_16_9("16:9", 16f / 9f),
     RATIO_9_16("9:16", 9f / 16f),
@@ -32,6 +34,7 @@ enum class AspectPreset(val label: String, val ratio: Float) {
     RATIO_4_3("4:3", 4f / 3f),
 }
 
+@Serializable
 enum class CanvasFitMode(val label: String) {
     FIT("Fit"),
     FILL("Fill"),
@@ -58,6 +61,7 @@ data class TimelineLayer(
     val isMuted: Boolean = false,
 )
 
+@Serializable
 data class LunaProjectSummary(
     val id: String = UUID.randomUUID().toString(),
     val title: String = "LUNA Project 1",
@@ -66,6 +70,8 @@ data class LunaProjectSummary(
     val fps: Int = 60,
     val durationMs: Long = 10_000L,
     val activePresetName: String = "Teal & Orange Blockbuster",
-    val layerCount: Int = 2,
+    val layerCount: Int = 1,
     val videoDisplayName: String? = null,
+    val thumbnailPath: String? = null,
+    val updatedAtMillis: Long = System.currentTimeMillis(),
 )

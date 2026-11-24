@@ -188,9 +188,10 @@ object VideoEffectsEngine {
             if (e > s) tx.copy(startMs = s, endMs = e) else null
         }
 
+        val clipAdjust = clip.adjust
         val frozenParams = makeShaderParams(
             clip = clip,
-            adjust = adjust,
+            adjust = clipAdjust,
             filterPreset = filterPreset,
             filterIntensity = filterIntensity,
             effectLayers = localEffects,
@@ -204,7 +205,7 @@ object VideoEffectsEngine {
             effectLayers = localEffects,
             overlays = localOverlays,
             texts = localTexts,
-            adjust = adjust,
+            adjust = clipAdjust,
             filterPreset = filterPreset,
             filterIntensity = filterIntensity,
             shaderParamsProvider = { frozenParams },
@@ -273,6 +274,7 @@ object VideoEffectsEngine {
             animation = clip.animation,
             transitions = transitionWindows,
             timelineOffsetMs = timelineOffsetMs,
+            cutFlashPunchOnStart = clip.cutFlashPunchOnStart,
         )
     }
 
@@ -335,8 +337,12 @@ object VideoEffectsEngine {
                 } else 0f
                 val shake = (filterPreset.shakeIntensity * filterIntensity).toFloat()
 
+                val cutPunch = if (!p.bypass && p.cutFlashPunchOnStart && timeMs in 0L..55L) {
+                    0.16f * (1f - timeMs / 55f).coerceIn(0f, 1f)
+                } else 0f
+
                 if (includeClipTransformInGl) {
-                    val zoomScale = (eval.zoomPercent / 100f).coerceIn(0.25f, 3.8f) *
+                    val zoomScale = ((eval.zoomPercent / 100f).coerceIn(0.25f, 3.8f) + cutPunch) *
                         activeClip.crop.scaleCrop * stabilizeZoom
                     val mirrorX = if (activeClip.transform.mirrorHorizontal) -1f else 1f
                     val totalRot = eval.rotateDeg + activeClip.crop.rotateDeg + filterPreset.rotationDegrees.toFloat()
@@ -356,7 +362,7 @@ object VideoEffectsEngine {
                     matrix.postTranslate(tx, ty)
                 } else {
                     // Preview renders posX/posY/zoom/rotate/mirror live via Compose graphicsLayer on TextureView!
-                    val previewGlScale = stabilizeZoom + fxZoom + shake * 0.10f
+                    val previewGlScale = stabilizeZoom + fxZoom + cutPunch + shake * 0.10f
                     matrix.postScale(previewGlScale, previewGlScale)
                     if (kotlin.math.abs(filterPreset.rotationDegrees) > 0.01) {
                         matrix.postRotate(-filterPreset.rotationDegrees.toFloat())

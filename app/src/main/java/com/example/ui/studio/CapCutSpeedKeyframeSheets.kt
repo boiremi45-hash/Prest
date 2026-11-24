@@ -1,6 +1,7 @@
 package com.example.ui.studio
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -27,7 +29,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.MovieFilter
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -35,6 +39,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -47,6 +52,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,9 +61,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -817,3 +826,250 @@ fun LabeledSlider(
         )
     }
 }
+
+@Composable
+fun ReverseClipsSheet(
+    clips: List<VideoClipSegment>,
+    clipThumbnails: Map<String, List<ImageBitmap>>,
+    reverseProgress: ReverseProgressState?,
+    onReverseSelected: (clipIds: List<String>, reverseAudio: Boolean) -> Unit,
+    onReverseAll: (reverseAudio: Boolean) -> Unit,
+    onClose: () -> Unit,
+) {
+    val importedClips = remember(clips) {
+        clips.filter { !it.sourceUriString.isNullOrBlank() }.sortedBy { it.timelineStartMs }
+    }
+    var reverseAudio by remember { mutableStateOf(true) }
+    val checkedIds = remember(importedClips) {
+        mutableStateMapOf<String, Boolean>().apply {
+            importedClips.forEach { put(it.id, !it.isReversed) }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ObsidianSurface)
+            .navigationBarsPadding()
+            .padding(bottom = 12.dp)
+            .testTag("reverse_clips_sheet"),
+    ) {
+        SheetHeader(
+            title = "Reverse Clip",
+            subtitle = "${importedClips.size} imported clip(s)",
+            onClose = onClose,
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(ObsidianSurfaceContainer)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Reverse Audio Too",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White,
+                )
+                Switch(
+                    checked = reverseAudio,
+                    onCheckedChange = { reverseAudio = it },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = ObsidianBackground,
+                        checkedTrackColor = CyberCyan,
+                    ),
+                    modifier = Modifier.testTag("reverse_audio_switch"),
+                )
+            }
+
+            if (reverseProgress != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(ObsidianSurfaceHigh)
+                        .border(1.dp, CyberCyan.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "Reversing ${reverseProgress.clipName} (${reverseProgress.currentClipIndex}/${reverseProgress.totalClips})",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${reverseProgress.percent}%",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = CyberCyan,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { (reverseProgress.percent / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(4.dp)),
+                        color = CyberCyan,
+                        trackColor = ObsidianSurfaceContainer,
+                    )
+                    Text(
+                        text = reverseProgress.statusLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                    )
+                }
+            }
+
+            if (importedClips.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(100.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(ObsidianSurfaceContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Import at least one video clip to reverse",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary,
+                    )
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(176.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    importedClips.forEachIndexed { idx, clip ->
+                        val isChecked = checkedIds[clip.id] == true
+                        val thumb = clipThumbnails[clip.id]?.firstOrNull()
+                        val durSec = clip.timelineDurationMs() / 1000f
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(ObsidianSurfaceContainer)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isChecked) CyberCyan.copy(alpha = 0.65f) else OutlineSubtle,
+                                    shape = RoundedCornerShape(10.dp),
+                                )
+                                .clickable { checkedIds[clip.id] = !isChecked }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("reverse_clip_row_$idx"),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 48.dp, height = 36.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(ObsidianSurfaceHigh),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (thumb != null) {
+                                    Image(
+                                        bitmap = thumb,
+                                        contentDescription = clip.displayName,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Filled.MovieFilter,
+                                        contentDescription = null,
+                                        tint = LunaMint,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = clip.displayName,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = String.format(Locale.US, "%.1fs", durSec),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary,
+                                    )
+                                    if (clip.isReversed) {
+                                        Surface(
+                                            color = CyberCyan.copy(alpha = 0.18f),
+                                            shape = RoundedCornerShape(4.dp),
+                                        ) {
+                                            Text(
+                                                text = "REVERSED",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                                                color = CyberCyan,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Checkbox(
+                                checked = isChecked,
+                                onCheckedChange = { checkedIds[clip.id] = it },
+                                colors = CheckboxDefaults.colors(checkedColor = CyberCyan, checkmarkColor = ObsidianBackground),
+                            )
+                        }
+                    }
+                }
+            }
+
+            val selectedIds = importedClips.filter { checkedIds[it.id] == true }.map { it.id }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { onReverseSelected(selectedIds, reverseAudio) },
+                    enabled = reverseProgress == null && selectedIds.isNotEmpty(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    modifier = Modifier.weight(1f).testTag("reverse_selected_button"),
+                ) {
+                    Text("Reverse Selected", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Button(
+                    onClick = { onReverseAll(reverseAudio) },
+                    enabled = reverseProgress == null && importedClips.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = ObsidianBackground),
+                    modifier = Modifier.weight(1f).testTag("reverse_all_button"),
+                ) {
+                    Text(
+                        text = "Reverse All Clips",
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+

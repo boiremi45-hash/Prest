@@ -5,6 +5,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -133,6 +135,9 @@ fun LunaApp() {
     val exportsState by viewModel.exportsState.collectAsStateWithLifecycle()
     val selectedVideo by viewModel.selectedVideo.collectAsStateWithLifecycle()
     val filmstrip by viewModel.filmstripThumbnails.collectAsStateWithLifecycle()
+    val clipThumbnails by viewModel.clipThumbnails.collectAsStateWithLifecycle()
+    val autosaveStatus by viewModel.autosaveStatus.collectAsStateWithLifecycle()
+    val reverseProgress by viewModel.reverseProgress.collectAsStateWithLifecycle()
     val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
     val activePreset by viewModel.activePreset.collectAsStateWithLifecycle()
     val bypassEffects by viewModel.bypassEffects.collectAsStateWithLifecycle()
@@ -173,10 +178,21 @@ fun LunaApp() {
     val isInEditor = currentDestination?.hasRoute(EditorRoute::class) == true
 
     fun navigateTop(route: Any) {
-        navController.navigate(route) {
-            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-            launchSingleTop = true
-            restoreState = true
+        if (route is EditorRoute) {
+            navController.navigate(route) {
+                popUpTo<HomeRoute> { saveState = false }
+                launchSingleTop = true
+                restoreState = false
+            }
+        } else {
+            if (isInEditor) {
+                viewModel.flushAutosave()
+            }
+            navController.navigate(route) {
+                popUpTo(navController.graph.findStartDestination().id) { saveState = false }
+                launchSingleTop = true
+                restoreState = false
+            }
         }
     }
 
@@ -328,6 +344,10 @@ fun LunaApp() {
                 NavHost(
                     navController = navController,
                     startDestination = HomeRoute,
+                    enterTransition = { EnterTransition.None },
+                    exitTransition = { ExitTransition.None },
+                    popEnterTransition = { EnterTransition.None },
+                    popExitTransition = { ExitTransition.None },
                 ) {
                     composable<HomeRoute> {
                         val loadedPresets = (presetsState as? UiState.Success)?.data.orEmpty()
@@ -343,8 +363,11 @@ fun LunaApp() {
                                 navigateTop(EditorRoute)
                             },
                             onOpenProject = { proj ->
-                                viewModel.openProjectSummary(proj, loadedPresets)
+                                viewModel.openProjectSummary(proj, loadedPresets, context)
                                 navigateTop(EditorRoute)
+                            },
+                            onDeleteProject = { proj ->
+                                viewModel.deleteProject(proj.id)
                             },
                             onSelectTemplate = { preset ->
                                 viewModel.applyPreset(preset)
@@ -356,6 +379,9 @@ fun LunaApp() {
                     }
 
                     composable<EditorRoute> {
+                        LaunchedEffect(Unit) {
+                            viewModel.restoreProjectThumbnailsIfNeeded(context)
+                        }
                         val spans = remember(snapshot.clips) { viewModel.clipSpans() }
                         val totalDurationMs = remember(snapshot) { viewModel.totalTimelineDurationMs() }
                         StudioScreen(
@@ -367,6 +393,9 @@ fun LunaApp() {
                             canvasFitMode = canvasFitMode,
                             selectedVideo = selectedVideo,
                             filmstrip = filmstrip,
+                            clipThumbnails = clipThumbnails,
+                            autosaveStatus = autosaveStatus,
+                            reverseProgress = reverseProgress,
                             selectedClipId = selectedClipId,
                             selectedOverlayId = selectedOverlayId,
                             selectedEffectId = selectedEffectId,
@@ -383,7 +412,12 @@ fun LunaApp() {
                             bypassEffects = bypassEffects,
                             presetsState = presetsState,
                             exportState = exportState,
-                            onNavigateBackHome = { navigateTop(HomeRoute) },
+                            onNavigateBackHome = {
+                                viewModel.flushAutosave()
+                                if (!navController.popBackStack<HomeRoute>(inclusive = false)) {
+                                    navigateTop(HomeRoute)
+                                }
+                            },
                             onPickVideo = {
                                 videoPickerLauncher.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
@@ -435,7 +469,11 @@ fun LunaApp() {
                             onDuplicateClip = { viewModel.duplicateSelectedClip() },
                             onDeleteClip = { viewModel.deleteSelectedClip() },
                             onFreezeClip = { viewModel.freezeSelectedClipAtPlayhead() },
-                            onReverseClip = { viewModel.toggleReverseSelectedClip() },
+                            onReverseClip = { viewModel.toggleReverseSelectedClip(context) },
+                            onReverseMultipleClips = { ids, isBatchAll, revAudio ->
+                                viewModel.reverseMultipleClips(context, ids, isBatchAll, revAudio)
+                            },
+                            onResetClipAll = { viewModel.resetSelectedClipAll() },
                             onMoveClipToOverlay = { viewModel.demoteSelectedClipToOverlay() },
                             onToggleMuteClip = { viewModel.toggleMuteClip(it) },
                             onToggleBeat = { viewModel.toggleBeatAtPlayhead() },

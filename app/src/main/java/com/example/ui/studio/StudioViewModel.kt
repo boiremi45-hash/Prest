@@ -25,12 +25,14 @@ import com.example.data.model.LunaProjectSummary
 import com.example.data.model.MaskSettings
 import com.example.data.model.MotionBlurSettings
 import com.example.data.model.OverlayTrackItem
+import com.example.data.model.PersistedProjectState
 import com.example.data.model.RgbCurvesSpec
 import com.example.data.model.SpeedSettings
 import com.example.data.model.StabilizeMode
 import com.example.data.model.TextKeyframeEvaluator
 import com.example.data.model.TextKeyframeNode
 import com.example.data.model.TextTrackItem
+import com.example.data.model.TimelineSnapshot
 import com.example.data.model.TransformSettings
 import com.example.data.model.TransitionSpec
 import com.example.data.model.TransitionType
@@ -38,6 +40,7 @@ import com.example.data.model.VideoClipSegment
 import com.example.data.model.VideoEffectLayer
 import com.example.data.model.VolumeKeyframeEvaluator
 import com.example.data.model.VolumeKeyframeNode
+import com.example.data.model.computeTotalVideoDurationMs
 import com.example.data.model.fillCanvasZoomPercent
 import com.example.data.repository.PresetRepository
 import com.example.domain.ffx.FfxParser
@@ -47,8 +50,11 @@ import com.example.domain.video.UiState
 import com.example.domain.video.VideoEffectsEngine
 import com.example.domain.video.VideoExportManager
 import com.example.domain.video.VideoMetadata
+import com.example.domain.video.VideoReverseProcessor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -61,18 +67,18 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.math.abs
 
-data class TimelineSnapshot(
-    val clips: List<VideoClipSegment>,
-    val transitions: List<TransitionSpec> = emptyList(),
-    val effectLayers: List<VideoEffectLayer> = emptyList(),
-    val overlays: List<OverlayTrackItem> = emptyList(),
-    val audioTracks: List<AudioTrackItem> = emptyList(),
-    val textTracks: List<TextTrackItem> = emptyList(),
-    val adjust: AdjustSettings = AdjustSettings(),
-    val activePreset: FfxPreset,
-    val filterIntensity: Float = 1.0f,
-    val hasEndingCard: Boolean = false,
-    val canvasBackgroundArgb: Long = 0xFF05060AL,
+enum class AutosaveStatus {
+    IDLE,
+    SAVING,
+    SAVED,
+}
+
+data class ReverseProgressState(
+    val currentClipIndex: Int,
+    val totalClips: Int,
+    val clipName: String,
+    val percent: Int,
+    val statusLabel: String,
 )
 
 @UnstableApi
@@ -104,6 +110,18 @@ class StudioViewModel(
 
     private val _filmstripThumbnails = MutableStateFlow<List<ImageBitmap>>(emptyList())
     val filmstripThumbnails: StateFlow<List<ImageBitmap>> = _filmstripThumbnails.asStateFlow()
+
+    private val _clipThumbnails = MutableStateFlow<Map<String, List<ImageBitmap>>>(emptyMap())
+    val clipThumbnails: StateFlow<Map<String, List<ImageBitmap>>> = _clipThumbnails.asStateFlow()
+
+    private val _activeProjectId = MutableStateFlow(UUID.randomUUID().toString())
+    private val _activeProjectThumbnailPath = MutableStateFlow<String?>(null)
+
+    private val _autosaveStatus = MutableStateFlow(AutosaveStatus.IDLE)
+    val autosaveStatus: StateFlow<AutosaveStatus> = _autosaveStatus.asStateFlow()
+
+    private val _reverseProgress = MutableStateFlow<ReverseProgressState?>(null)
+    val reverseProgress: StateFlow<ReverseProgressState?> = _reverseProgress.asStateFlow()
 
     private val _snapshot = MutableStateFlow(
         TimelineSnapshot(
@@ -172,8 +190,9 @@ class StudioViewModel(
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
-    private val _recentProjects = MutableStateFlow(initialProjectsList(starterPreset))
-    val recentProjects: StateFlow<List<LunaProjectSummary>> = _recentProjects.asStateFlow()
+    val recentProjects: StateFlow<List<LunaProjectSummary>> = repository.observeProjects()
+        .catch { emit(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _exportState = MutableStateFlow<ExportUiState>(ExportUiState.Idle)
     val exportState: StateFlow<ExportUiState> = _exportState.asStateFlow()
@@ -181,8 +200,17 @@ class StudioViewModel(
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    private var autosaveJob: Job? = null
+    private var hasModifiedInSession = false
+
     init {
         seedStarterPackIfEmpty()
+        viewModelScope.launch {
+            val saved = repository.getMostRecentProjectState()
+            if (saved != null && !hasModifiedInSession) {
+                applyPersistedState(saved, appContext = null)
+            }
+        }
     }
 
     fun seedStarterPackIfEmpty() {
@@ -195,7 +223,10 @@ class StudioViewModel(
 
     fun clearStatusMessage() { _statusMessage.value = null }
     fun toggleBypass() { _bypassEffects.value = !_bypassEffects.value }
-    fun updateTimelineZoom(zoom: Float) { _timelineZoom.value = zoom.coerceIn(0.45f, 3.8f) }
+    fun updateTimelineZoom(zoom: Float) {
+        _timelineZoom.value = zoom.coerceIn(0.45f, 3.8f)
+        scheduleAutosave()
+    }
     fun setKeyframeMode(enabled: Boolean) { _keyframeModeEnabled.value = enabled }
     fun toggleKeyframeMode() { _keyframeModeEnabled.value = !_keyframeModeEnabled.value }
 
@@ -246,112 +277,243 @@ class StudioViewModel(
         aspect: AspectPreset,
         resolutionLabel: String,
         fps: Int,
-        preset: FfxPreset = _snapshot.value.activePreset,
+        preset: FfxPreset = starterPreset,
     ) {
-        _projectTitle.value = title.trim().ifBlank { "LUNA Project ${_recentProjects.value.size + 1}" }
+        hasModifiedInSession = true
+        val newId = UUID.randomUUID().toString()
+        _activeProjectId.value = newId
+        _activeProjectThumbnailPath.value = null
+        _projectTitle.value = title.trim().ifBlank { "LUNA Project ${recentProjects.value.size + 1}" }
         _aspectPreset.value = aspect
         _projectResolution.value = resolutionLabel
         _projectFps.value = fps
+        _canvasFitMode.value = CanvasFitMode.FIT
+        _timelineZoom.value = 1.0f
         _bypassEffects.value = false
+        clearAllTrackSelections()
+        _selectedVideo.value = null
+        _filmstripThumbnails.value = emptyList()
+        _clipThumbnails.value = emptyMap()
+        _exportState.value = ExportUiState.Idle
         undoStack.clear()
         redoStack.clear()
         syncUndoRedoFlags()
-        val video = _selectedVideo.value
-        val dur = video?.durationMs?.takeIf { it > 400L } ?: 8_000L
+
         _snapshot.value = TimelineSnapshot(
-            clips = listOf(
-                VideoClipSegment(
-                    id = "clip_main_1",
-                    sourceUriString = video?.uri?.toString(),
-                    displayName = video?.displayName ?: "Import Video Clip",
-                    trimStartMs = 0L,
-                    trimEndMs = dur,
-                    sourceDurationMs = dur,
-                )
-            ),
+            clips = listOf(VideoClipSegment(id = UUID.randomUUID().toString(), displayName = "Import Video Clip")),
             activePreset = preset,
         )
-        _selectedClipId.value = null
         _playheadMs.value = 0L
-        upsertCurrentProjectSummary(dur)
+        saveProjectImmediately()
     }
 
-    fun openProjectSummary(project: LunaProjectSummary, presets: List<FfxPreset>) {
-        _projectTitle.value = project.title
-        _aspectPreset.value = project.aspectPreset
-        _projectResolution.value = project.resolutionLabel
-        _projectFps.value = project.fps
-        val matched = presets.firstOrNull { it.name == project.activePresetName } ?: _snapshot.value.activePreset
-        applyPreset(matched)
+    fun openProjectSummary(project: LunaProjectSummary, presets: List<FfxPreset>, context: Context? = null) {
+        hasModifiedInSession = true
+        viewModelScope.launch {
+            val loaded = repository.loadProjectState(project.id).getOrNull()
+            if (loaded != null) {
+                applyPersistedState(loaded, context)
+            } else {
+                _activeProjectId.value = project.id
+                _projectTitle.value = project.title
+                _aspectPreset.value = project.aspectPreset
+                _projectResolution.value = project.resolutionLabel
+                _projectFps.value = project.fps
+                val matched = presets.firstOrNull { it.name == project.activePresetName } ?: _snapshot.value.activePreset
+                applyPreset(matched)
+            }
+        }
+    }
+
+    fun restoreProjectThumbnailsIfNeeded(context: Context) {
+        val clipsWithMedia = _snapshot.value.clips.filter { !it.effectiveUriString().isNullOrBlank() }
+        if (clipsWithMedia.isEmpty()) return
+        viewModelScope.launch {
+            if (_selectedVideo.value == null) {
+                val firstUri = clipsWithMedia.first().effectiveUriString()?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                if (firstUri != null) {
+                    _selectedVideo.value = VideoExportManager.readVideoMetadata(context, firstUri)
+                }
+            }
+            val currentMap = _clipThumbnails.value.toMutableMap()
+            var changed = false
+            for (clip in clipsWithMedia) {
+                if (currentMap[clip.id].isNullOrEmpty()) {
+                    val uri = clip.effectiveUriString()?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: continue
+                    val thumbs = VideoExportManager.extractFilmstripThumbnails(
+                        context = context,
+                        uri = uri,
+                        durationMs = clip.effectiveSourceDurationMs(),
+                        trimStartMs = clip.effectiveTrimStartMs(),
+                        trimEndMs = clip.effectiveTrimEndMs(),
+                        isReversed = clip.isReversed && !clip.hasReversedMediaReady(),
+                    )
+                    if (thumbs.isNotEmpty()) {
+                        currentMap[clip.id] = thumbs
+                        changed = true
+                    }
+                }
+            }
+            if (changed) {
+                _clipThumbnails.value = currentMap
+                if (_filmstripThumbnails.value.isEmpty()) {
+                    _filmstripThumbnails.value = clipsWithMedia.firstOrNull()?.id?.let { currentMap[it] }.orEmpty()
+                }
+            }
+        }
+    }
+
+    fun deleteProject(projectId: String) {
+        viewModelScope.launch {
+            repository.deleteProject(projectId)
+            if (_activeProjectId.value == projectId) {
+                val next = repository.getMostRecentProjectState()
+                if (next != null) {
+                    applyPersistedState(next, appContext = null)
+                } else {
+                    _activeProjectId.value = UUID.randomUUID().toString()
+                    _activeProjectThumbnailPath.value = null
+                    _selectedVideo.value = null
+                    _filmstripThumbnails.value = emptyList()
+                    _clipThumbnails.value = emptyMap()
+                    _snapshot.value = TimelineSnapshot(
+                        clips = listOf(VideoClipSegment(id = UUID.randomUUID().toString(), displayName = "Import Video Clip")),
+                        activePreset = starterPreset,
+                    )
+                    _playheadMs.value = 0L
+                }
+            }
+            _statusMessage.value = "Project deleted"
+        }
+    }
+
+    fun flushAutosave() {
+        autosaveJob?.cancel()
+        saveProjectImmediately()
+    }
+
+    private fun applyPersistedState(state: PersistedProjectState, appContext: Context?) {
+        _activeProjectId.value = state.projectId
+        _activeProjectThumbnailPath.value = state.thumbnailPath
+        _projectTitle.value = state.title
+        _aspectPreset.value = state.aspectPreset
+        _projectResolution.value = state.resolutionLabel
+        _projectFps.value = state.fps
+        _canvasFitMode.value = state.canvasFitMode
+        _timelineZoom.value = state.timelineZoom.coerceIn(0.45f, 3.8f)
+        clearAllTrackSelections()
+        undoStack.clear()
+        redoStack.clear()
+        syncUndoRedoFlags()
+        _snapshot.value = state.snapshot
+        _playheadMs.value = state.playheadMs.coerceIn(0L, computeTotalVideoDurationMs(state.snapshot.clips))
+        _filmstripThumbnails.value = emptyList()
+        _clipThumbnails.value = emptyMap()
+
+        val firstUriStr = state.snapshot.clips.firstOrNull { !it.effectiveUriString().isNullOrBlank() }?.effectiveUriString()
+        val firstUri = firstUriStr?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        if (firstUri == null) {
+            _selectedVideo.value = null
+        } else if (appContext != null) {
+            restoreProjectThumbnailsIfNeeded(appContext)
+        } else {
+            val firstClip = state.snapshot.clips.first { !it.effectiveUriString().isNullOrBlank() }
+            _selectedVideo.value = VideoMetadata(
+                uri = firstUri,
+                displayName = firstClip.displayName,
+                width = firstClip.width,
+                height = firstClip.height,
+                durationMs = firstClip.sourceDurationMs,
+            )
+        }
+        _autosaveStatus.value = AutosaveStatus.SAVED
     }
 
     fun updateProjectSettings(title: String, aspect: AspectPreset, res: String, fps: Int) {
+        hasModifiedInSession = true
         _projectTitle.value = title.trim().ifBlank { _projectTitle.value }
         _aspectPreset.value = aspect
         _projectResolution.value = res
         _projectFps.value = fps
-        upsertCurrentProjectSummary(totalTimelineDurationMs())
+        scheduleAutosave()
     }
 
     fun setAspectPreset(aspect: AspectPreset) {
+        hasModifiedInSession = true
         _aspectPreset.value = aspect
+        scheduleAutosave()
     }
 
     fun cycleCanvasFitMode() {
+        hasModifiedInSession = true
         val entries = CanvasFitMode.entries
         _canvasFitMode.value = entries[(entries.indexOf(_canvasFitMode.value) + 1) % entries.size]
+        scheduleAutosave()
     }
 
     fun selectVideo(context: Context, uri: Uri, replaceSelectedClip: Boolean = false, appendNew: Boolean = false) {
+        hasModifiedInSession = true
         viewModelScope.launch {
-            val metadata = VideoExportManager.readVideoMetadata(context, uri)
+            val persistedUri = repository.persistMediaLocally(context, uri, "videos")
+            val metadata = VideoExportManager.readVideoMetadata(context, persistedUri)
             val dur = metadata.durationMs.takeIf { it > 400L } ?: 8_000L
-            val thumbs = VideoExportManager.extractFilmstripThumbnails(context, uri, dur, count = 10)
-            if (thumbs.isNotEmpty() && (!appendNew || _filmstripThumbnails.value.isEmpty())) {
-                _filmstripThumbnails.value = thumbs
+            val clipId = if (replaceSelectedClip && _selectedClipId.value != null) {
+                _selectedClipId.value!!
+            } else if (!appendNew && _snapshot.value.clips.all { it.sourceUriString.isNullOrBlank() }) {
+                _snapshot.value.clips.firstOrNull()?.id ?: UUID.randomUUID().toString()
+            } else {
+                UUID.randomUUID().toString()
+            }
+            val thumbs = VideoExportManager.extractFilmstripThumbnails(
+                context = context,
+                uri = persistedUri,
+                durationMs = dur,
+                trimStartMs = 0L,
+                trimEndMs = dur,
+            )
+            if (thumbs.isNotEmpty()) {
+                _clipThumbnails.value = _clipThumbnails.value + (clipId to thumbs)
+                if (!appendNew || _filmstripThumbnails.value.isEmpty()) {
+                    _filmstripThumbnails.value = thumbs
+                }
             }
             if (_selectedVideo.value == null || !appendNew) {
                 _selectedVideo.value = metadata
             }
             _exportState.value = ExportUiState.Idle
-            val nextTimelineStart = _snapshot.value.clips
-                .maxOfOrNull { it.timelineStartMs + it.timelineDurationMs() } ?: 0L
+            val realClips = _snapshot.value.clips.filter { !it.sourceUriString.isNullOrBlank() }
+            val nextTimelineStart = realClips.maxOfOrNull { it.timelineStartMs + it.timelineDurationMs() } ?: 0L
             val newSegment = VideoClipSegment(
-                sourceUriString = uri.toString(),
+                id = clipId,
+                sourceUriString = persistedUri.toString(),
                 displayName = metadata.displayName,
-                timelineStartMs = if (appendNew) nextTimelineStart else 0L,
+                width = metadata.width,
+                height = metadata.height,
+                timelineStartMs = if (appendNew && realClips.isNotEmpty()) nextTimelineStart else 0L,
                 trimStartMs = 0L,
                 trimEndMs = dur,
                 sourceDurationMs = dur,
             )
             mutate { s ->
                 val updatedClips = when {
-                    appendNew && _selectedVideo.value != null && s.clips.any { it.sourceUriString != null } ->
+                    appendNew && s.clips.any { !it.sourceUriString.isNullOrBlank() } ->
                         s.clips + newSegment
                     replaceSelectedClip && _selectedClipId.value != null ->
                         s.clips.map {
                             if (it.id == _selectedClipId.value) newSegment.copy(id = it.id, timelineStartMs = it.timelineStartMs) else it
                         }
-                    else -> listOf(newSegment.copy(id = "clip_main_1", timelineStartMs = 0L))
+                    else -> listOf(newSegment.copy(timelineStartMs = 0L))
                 }
                 s.copy(clips = updatedClips)
             }
             if (!appendNew) _playheadMs.value = 0L
-            upsertCurrentProjectSummary(totalTimelineDurationMs())
+            val thumbPath = repository.saveProjectThumbnail(context, _activeProjectId.value, persistedUri, 0L)
+            if (thumbPath != null) _activeProjectThumbnailPath.value = thumbPath
+            saveProjectImmediately()
         }
     }
 
-    fun totalTimelineDurationMs(): Long {
-        val snap = _snapshot.value
-        val clipEnd = VideoEffectsEngine.computeClipSpans(snap.clips).maxOfOrNull { it.endMs } ?: 0L
-        val ovEnd = snap.overlays.maxOfOrNull { it.endMs } ?: 0L
-        val fxEnd = snap.effectLayers.maxOfOrNull { it.endMs } ?: 0L
-        val txEnd = snap.textTracks.maxOfOrNull { it.endMs } ?: 0L
-        val auEnd = snap.audioTracks.maxOfOrNull { it.endMs } ?: 0L
-        val main = maxOf(clipEnd, ovEnd, fxEnd, txEnd, auEnd)
-        val ending = if (snap.hasEndingCard) 2_000L else 0L
-        return (main + ending).coerceAtLeast(1_000L)
-    }
+    fun totalTimelineDurationMs(): Long = computeTotalVideoDurationMs(_snapshot.value.clips)
 
     fun clipSpans(): List<ClipTimelineSpan> = VideoEffectsEngine.computeClipSpans(_snapshot.value.clips)
 
@@ -360,7 +522,11 @@ class StudioViewModel(
         val t = _playheadMs.value
         val byId = _selectedClipId.value?.let { id -> _snapshot.value.clips.firstOrNull { it.id == id } }
         val activeIdx = com.example.data.model.findActiveSpanIndex(spans, t)
-        return byId ?: spans.getOrNull(activeIdx)?.clip ?: spans.firstOrNull()?.clip ?: _snapshot.value.clips.first()
+        return byId
+            ?: spans.getOrNull(activeIdx)?.clip
+            ?: spans.firstOrNull()?.clip
+            ?: _snapshot.value.clips.firstOrNull()
+            ?: VideoClipSegment(id = "clip_main_1", displayName = "Import Video Clip")
     }
 
     fun updatePlayhead(ms: Long) {
@@ -406,7 +572,15 @@ class StudioViewModel(
             val defaultTr = TransitionSpec(afterClipId = first.id, type = TransitionType.NONE, durationSec = 0.4f)
             s.copy(clips = newClips, transitions = s.transitions + defaultTr)
         }
+        val curThumbs = _clipThumbnails.value[clip.id]
+        if (!curThumbs.isNullOrEmpty() && curThumbs.size >= 2) {
+            val midIdx = (curThumbs.size * localMs / clipLen.coerceAtLeast(1L)).toInt().coerceIn(1, curThumbs.lastIndex)
+            _clipThumbnails.value = _clipThumbnails.value +
+                (clip.id to curThumbs.subList(0, midIdx)) +
+                (secondId to curThumbs.subList(midIdx, curThumbs.size))
+        }
         _selectedClipId.value = secondId
+        saveProjectImmediately()
     }
 
     fun moveVideoClip(clipId: String, deltaMs: Long) {
@@ -606,18 +780,46 @@ class StudioViewModel(
     }
 
     fun deleteSelectedClip() {
-        val id = _selectedClipId.value ?: return
-        if (_snapshot.value.clips.size <= 1) {
-            _statusMessage.value = "Main track requires at least one clip."
+        val id = _selectedClipId.value ?: activeClipAtPlayhead().id
+        val currentClips = _snapshot.value.clips
+        val hasImportedClips = currentClips.any { !it.sourceUriString.isNullOrBlank() }
+        if (currentClips.isEmpty() || !hasImportedClips) {
+            _statusMessage.value = "No video clip to delete."
+            return
+        }
+        if (currentClips.size <= 1) {
+            mutate { s ->
+                s.copy(
+                    clips = listOf(VideoClipSegment(id = UUID.randomUUID().toString(), displayName = "Import Video Clip")),
+                    transitions = emptyList(),
+                )
+            }
+            _selectedVideo.value = null
+            _filmstripThumbnails.value = emptyList()
+            _clipThumbnails.value = emptyMap()
+            _selectedClipId.value = null
+            _playheadMs.value = 0L
+            saveProjectImmediately()
             return
         }
         mutate { s ->
+            val remaining = s.clips.filterNot { it.id == id }.sortedBy { it.timelineStartMs }
+            // Keep timeline contiguous with 0 gap after deleting intermediate/start clips
+            var cursor = 0L
+            val compacted = remaining.map { c ->
+                val updated = c.copy(timelineStartMs = cursor)
+                cursor += updated.timelineDurationMs()
+                updated
+            }
             s.copy(
-                clips = s.clips.filterNot { it.id == id },
+                clips = compacted,
                 transitions = s.transitions.filterNot { it.afterClipId == id },
             )
         }
+        _clipThumbnails.value = _clipThumbnails.value - id
         _selectedClipId.value = null
+        _playheadMs.value = _playheadMs.value.coerceIn(0L, totalTimelineDurationMs())
+        saveProjectImmediately()
     }
 
     fun freezeSelectedClipAtPlayhead() {
@@ -661,10 +863,140 @@ class StudioViewModel(
         _statusMessage.value = "Inserted 3.0s Freeze Frame"
     }
 
-    fun toggleReverseSelectedClip() {
+    fun toggleReverseSelectedClip(context: Context, reverseAudio: Boolean = true) {
         val target = activeClipAtPlayhead()
-        mutateClip(target.id) { it.copy(isReversed = !it.isReversed) }
-        _statusMessage.value = if (!target.isReversed) "Reverse enabled" else "Reverse disabled"
+        if (target.isReversed) {
+            mutateClip(target.id) { it.copy(isReversed = false, cutFlashPunchOnStart = false) }
+            _statusMessage.value = "Restored original forward playback"
+            refreshClipThumbnailsAsync(context, target.copy(isReversed = false, cutFlashPunchOnStart = false))
+            saveProjectImmediately()
+            return
+        }
+        reverseMultipleClips(
+            context = context,
+            clipIds = listOf(target.id),
+            isBatchReverseAll = false,
+            reverseAudio = reverseAudio,
+        )
+    }
+
+    fun reverseMultipleClips(
+        context: Context,
+        clipIds: List<String>,
+        isBatchReverseAll: Boolean,
+        reverseAudio: Boolean,
+    ) {
+        val allClips = _snapshot.value.clips.sortedBy { it.timelineStartMs }
+        val targets = allClips.filter { it.id in clipIds && !it.sourceUriString.isNullOrBlank() }
+        if (targets.isEmpty()) {
+            _statusMessage.value = "Import a video clip before reversing."
+            return
+        }
+        viewModelScope.launch {
+            val total = targets.size
+            val updatedClipsMap = mutableMapOf<String, VideoClipSegment>()
+            targets.forEachIndexed { idx, clip ->
+                val srcUri = clip.sourceUriString?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                if (srcUri != null) {
+                    val isShortCut = shouldApplyShortReverseCutEffect(clip, isBatchReverseAll) && idx > 0
+                    val reusableExisting = clip.reversedUriString?.takeIf {
+                        clip.reverseAudio == reverseAudio && java.io.File(Uri.parse(it).path ?: "").exists()
+                    }
+                    if (reusableExisting != null) {
+                        val updated = clip.copy(
+                            isReversed = true,
+                            reverseAudio = reverseAudio,
+                            cutFlashPunchOnStart = isShortCut,
+                        )
+                        updatedClipsMap[clip.id] = updated
+                    } else {
+                        _reverseProgress.value = ReverseProgressState(
+                            currentClipIndex = idx + 1,
+                            totalClips = total,
+                            clipName = clip.displayName,
+                            percent = 0,
+                            statusLabel = "Starting reverse...",
+                        )
+                        val res = VideoReverseProcessor.generateReversedClipMp4(
+                            context = context,
+                            sourceUri = srcUri,
+                            clipId = clip.id,
+                            trimStartMs = clip.trimStartMs,
+                            trimEndMs = clip.trimEndMs,
+                            reverseAudio = reverseAudio,
+                            targetWidth = clip.width,
+                            targetHeight = clip.height,
+                            onProgress = { pct, label ->
+                                _reverseProgress.value = ReverseProgressState(
+                                    currentClipIndex = idx + 1,
+                                    totalClips = total,
+                                    clipName = clip.displayName,
+                                    percent = pct,
+                                    statusLabel = label,
+                                )
+                            },
+                        )
+                        res.onSuccess { out ->
+                            val updated = clip.copy(
+                                isReversed = true,
+                                reversedUriString = out.reversedUri.toString(),
+                                reverseAudio = reverseAudio,
+                                cutFlashPunchOnStart = isShortCut,
+                            )
+                            updatedClipsMap[clip.id] = updated
+                        }.onFailure { err ->
+                            _statusMessage.value = "Reverse failed (${clip.displayName}): ${err.localizedMessage}"
+                        }
+                    }
+                }
+            }
+            _reverseProgress.value = null
+            if (updatedClipsMap.isNotEmpty()) {
+                mutate { s ->
+                    val mapped = s.clips.sortedBy { it.timelineStartMs }.map { c -> updatedClipsMap[c.id] ?: c }
+                    if (isBatchReverseAll) {
+                        // Ensure seamless back-to-back playback with 0 gaps or black frames
+                        var cursor = 0L
+                        val packed = mapped.map { c ->
+                            val adj = c.copy(timelineStartMs = cursor)
+                            cursor += adj.timelineDurationMs()
+                            adj
+                        }
+                        s.copy(clips = packed)
+                    } else {
+                        s.copy(clips = mapped)
+                    }
+                }
+                updatedClipsMap.values.forEach { refreshClipThumbnailsAsync(context, it) }
+                saveProjectImmediately()
+                _statusMessage.value = if (isBatchReverseAll) {
+                    "Reversed all ${updatedClipsMap.size} clips cleanly."
+                } else {
+                    "Reversed ${updatedClipsMap.size} clip(s) frame-by-frame."
+                }
+            }
+        }
+    }
+
+    private fun refreshClipThumbnailsAsync(context: Context, clip: VideoClipSegment) {
+        val uriStr = clip.effectiveUriString() ?: return
+        val uri = runCatching { Uri.parse(uriStr) }.getOrNull() ?: return
+        viewModelScope.launch {
+            val thumbs = VideoExportManager.extractFilmstripThumbnails(
+                context = context,
+                uri = uri,
+                durationMs = clip.effectiveSourceDurationMs(),
+                trimStartMs = clip.effectiveTrimStartMs(),
+                trimEndMs = clip.effectiveTrimEndMs(),
+                isReversed = clip.isReversed && !clip.hasReversedMediaReady(),
+            )
+            if (thumbs.isNotEmpty()) {
+                _clipThumbnails.value = _clipThumbnails.value + (clip.id to thumbs)
+                if (_snapshot.value.clips.firstOrNull()?.id == clip.id) {
+                    _filmstripThumbnails.value = thumbs
+                }
+            }
+        }
     }
 
     fun demoteSelectedClipToOverlay() {
@@ -948,7 +1280,7 @@ class StudioViewModel(
             localTimeMs = local,
             baseTransform = clip.transform,
             baseOpacity = clip.opacity,
-            baseAdjust = _snapshot.value.adjust,
+            baseAdjust = clip.adjust,
             baseFilterIntensity = _snapshot.value.filterIntensity,
         )
         return TransformSettings(
@@ -966,10 +1298,10 @@ class StudioViewModel(
             localTimeMs = localMs,
             baseTransform = clip.transform,
             baseOpacity = clip.opacity,
-            baseAdjust = _snapshot.value.adjust,
+            baseAdjust = clip.adjust,
             baseFilterIntensity = _snapshot.value.filterIntensity,
         )
-        val adj = _snapshot.value.adjust
+        val adj = clip.adjust
         return KeyframeNode(
             timeMs = localMs,
             easingToNext = EasingGraph.LINEAR,
@@ -1345,7 +1677,12 @@ class StudioViewModel(
     }
 
     fun updateAdjust(adjust: AdjustSettings) {
-        mutate(pushHistory = false) { it.copy(adjust = adjust) }
+        val targetId = activeClipAtPlayhead().id
+        mutate(pushHistory = false) { s ->
+            s.copy(
+                clips = s.clips.map { if (it.id == targetId) it.copy(adjust = adjust) else it }
+            )
+        }
     }
 
     fun commitAdjustSnapshot() {
@@ -1356,34 +1693,61 @@ class StudioViewModel(
     }
 
     fun applySmartAutoAdjust() {
+        val targetId = activeClipAtPlayhead().id
         mutate { s ->
             s.copy(
-                adjust = s.adjust.copy(
-                    brightness = 4f,
-                    contrast = 14f,
-                    saturation = 12f,
-                    brilliance = 16f,
-                    clarity = 15f,
-                    sharpen = 22f,
-                    highlights = -12f,
-                    shadows = 14f,
-                    rgbCurves = RgbCurvesSpec(
-                        white = listOf(
-                            CurvePoint(0f, 0.02f),
-                            CurvePoint(0.25f, 0.21f),
-                            CurvePoint(0.55f, 0.58f),
-                            CurvePoint(0.85f, 0.89f),
-                            CurvePoint(1f, 1f),
+                clips = s.clips.map { clip ->
+                    if (clip.id != targetId) clip
+                    else clip.copy(
+                        adjust = clip.adjust.copy(
+                            brightness = 4f,
+                            contrast = 14f,
+                            saturation = 12f,
+                            brilliance = 16f,
+                            clarity = 15f,
+                            sharpen = 22f,
+                            highlights = -12f,
+                            shadows = 14f,
+                            rgbCurves = RgbCurvesSpec(
+                                white = listOf(
+                                    CurvePoint(0f, 0.02f),
+                                    CurvePoint(0.25f, 0.21f),
+                                    CurvePoint(0.55f, 0.58f),
+                                    CurvePoint(0.85f, 0.89f),
+                                    CurvePoint(1f, 1f),
+                                )
+                            ),
                         )
-                    ),
-                )
+                    )
+                }
             )
         }
         _statusMessage.value = "Applied Smart Auto Adjust"
     }
 
     fun resetAdjust() {
-        mutate { it.copy(adjust = AdjustSettings()) }
+        val targetId = activeClipAtPlayhead().id
+        mutateClip(targetId) { it.copy(adjust = AdjustSettings()) }
+    }
+
+    fun resetSelectedClipAll() {
+        val targetId = activeClipAtPlayhead().id
+        mutateClip(targetId) {
+            it.copy(
+                transform = TransformSettings(),
+                crop = CropSettings(),
+                adjust = AdjustSettings(),
+                opacity = 1.0f,
+                motionBlur = MotionBlurSettings(),
+                stabilize = StabilizeMode.OFF,
+                speed = SpeedSettings(),
+                volumePercent = 100,
+                isMuted = false,
+                animation = AnimationSettings(),
+                mask = MaskSettings(),
+            )
+        }
+        _statusMessage.value = "Reset selected clip settings"
     }
 
     fun applyPreset(preset: FfxPreset) {
@@ -1791,6 +2155,7 @@ class StudioViewModel(
     }
 
     private fun mutate(pushHistory: Boolean = true, transform: (TimelineSnapshot) -> TimelineSnapshot) {
+        hasModifiedInSession = true
         val current = _snapshot.value
         val updated = transform(current)
         if (updated != current) {
@@ -1801,6 +2166,7 @@ class StudioViewModel(
                 syncUndoRedoFlags()
             }
             _snapshot.value = updated
+            scheduleAutosave()
         }
     }
 
@@ -1809,29 +2175,46 @@ class StudioViewModel(
         _canRedo.value = redoStack.isNotEmpty()
     }
 
-    private fun upsertCurrentProjectSummary(durationMs: Long) {
-        val title = _projectTitle.value
-        val summary = LunaProjectSummary(
-            id = title.lowercase().replace(' ', '_'),
-            title = title,
+    private fun scheduleAutosave() {
+        autosaveJob?.cancel()
+        _autosaveStatus.value = AutosaveStatus.SAVING
+        autosaveJob = viewModelScope.launch {
+            delay(350L)
+            persistSnapshotNow()
+        }
+    }
+
+    private fun saveProjectImmediately() {
+        autosaveJob?.cancel()
+        _autosaveStatus.value = AutosaveStatus.SAVING
+        viewModelScope.launch {
+            persistSnapshotNow()
+        }
+    }
+
+    private suspend fun persistSnapshotNow() {
+        val state = PersistedProjectState(
+            projectId = _activeProjectId.value,
+            title = _projectTitle.value,
             aspectPreset = _aspectPreset.value,
             resolutionLabel = _projectResolution.value,
             fps = _projectFps.value,
-            durationMs = durationMs,
-            activePresetName = _snapshot.value.activePreset.name,
-            layerCount = _snapshot.value.clips.size + _snapshot.value.effectLayers.size + _snapshot.value.overlays.size,
-            videoDisplayName = _selectedVideo.value?.displayName,
+            canvasFitMode = _canvasFitMode.value,
+            playheadMs = _playheadMs.value,
+            timelineZoom = _timelineZoom.value,
+            thumbnailPath = _activeProjectThumbnailPath.value,
+            snapshot = _snapshot.value,
         )
-        _recentProjects.value = listOf(summary) + _recentProjects.value.filterNot { it.title == title }
+        repository.saveProjectState(state)
+        _autosaveStatus.value = AutosaveStatus.SAVED
     }
 
-    private companion object {
-        const val TAG = "StudioViewModel"
+    companion object {
+        private const val TAG = "StudioViewModel"
 
-        fun initialProjectsList(starterPreset: FfxPreset): List<LunaProjectSummary> = listOf(
-            LunaProjectSummary("proj_1", "LUNA Studio Edit", AspectPreset.RATIO_9_16, "1080p", 30, 8_000L, starterPreset.name, 2),
-            LunaProjectSummary("proj_2", "Night Cinema CC", AspectPreset.RATIO_1_1, "1440p", 60, 17_000L, "Cyber Neon Split-Tone", 3),
-            LunaProjectSummary("proj_3", "35mm Film Look", AspectPreset.RATIO_4_3, "1080p", 30, 24_000L, "Kodak 2383 Film Grain", 2),
-        )
+        fun shouldApplyShortReverseCutEffect(clip: VideoClipSegment, isBatchReverseAll: Boolean): Boolean {
+            val dur = clip.timelineDurationMs()
+            return isBatchReverseAll && dur in 450L..1_050L
+        }
     }
 }

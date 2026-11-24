@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import kotlinx.serialization.Serializable
 import java.util.UUID
 import kotlin.math.PI
 import kotlin.math.abs
@@ -8,6 +9,7 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+@Serializable
 enum class EasingGraph(val label: String) {
     NONE("None"),
     LINEAR("Linear"),
@@ -104,6 +106,7 @@ enum class EasingGraph(val label: String) {
     }
 }
 
+@Serializable
 data class KeyframeNode(
     val id: String = UUID.randomUUID().toString(),
     val timeMs: Long,
@@ -207,6 +210,7 @@ object KeyframeEvaluator {
     }
 }
 
+@Serializable
 data class TextKeyframeNode(
     val id: String = UUID.randomUUID().toString(),
     val timeMs: Long,
@@ -281,6 +285,7 @@ object TextKeyframeEvaluator {
     }
 }
 
+@Serializable
 data class VolumeKeyframeNode(
     val id: String = UUID.randomUUID().toString(),
     val timeMs: Long,
@@ -312,12 +317,14 @@ object VolumeKeyframeEvaluator {
     }
 }
 
+@Serializable
 enum class SpeedMode(val label: String) {
     NORMAL("Normal"),
     CURVE("Curve"),
     VELOCITY("Velocity effects"),
 }
 
+@Serializable
 enum class CurveSpeedPreset(val label: String, val points: List<Float>) {
     CUSTOM("Custom", listOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f)),
     MONTAGE("Montage", listOf(1.8f, 0.5f, 1.6f, 0.4f, 1.5f)),
@@ -328,6 +335,7 @@ enum class CurveSpeedPreset(val label: String, val points: List<Float>) {
     FLASH_OUT("Flash Out", listOf(1.0f, 1.0f, 1.2f, 2.4f, 4.0f)),
 }
 
+@Serializable
 enum class VelocityPreset(val label: String, val points: List<Float>) {
     NONE("None", listOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f)),
     AUTO_VELOCITY("Auto Velocity", listOf(2.4f, 0.45f, 2.2f, 0.45f, 2.0f)),
@@ -336,6 +344,7 @@ enum class VelocityPreset(val label: String, val points: List<Float>) {
     HERO_DROP("Hero Drop", listOf(1.8f, 0.3f, 0.3f, 0.5f, 2.8f)),
 }
 
+@Serializable
 data class SpeedSettings(
     val mode: SpeedMode = SpeedMode.NORMAL,
     val normalSpeed: Float = 1.0f, // 0.1f .. 100.0f
@@ -367,6 +376,7 @@ data class SpeedSettings(
     }
 }
 
+@Serializable
 data class TransformSettings(
     val posX: Float = 0f,         // -1.0f .. 1.0f
     val posY: Float = 0f,         // -1.0f .. 1.0f
@@ -406,6 +416,7 @@ fun fillCanvasZoomPercent(
     return (scale * 100f).coerceIn(100f, 360f)
 }
 
+@Serializable
 enum class CropAspect(val label: String, val ratio: Float?) {
     FREE("Free", null),
     R_9_16("9:16", 9f / 16f),
@@ -415,12 +426,14 @@ enum class CropAspect(val label: String, val ratio: Float?) {
     R_3_4("3:4", 3f / 4f),
 }
 
+@Serializable
 data class CropSettings(
     val aspect: CropAspect = CropAspect.FREE,
     val rotateDeg: Float = 0f,
     val scaleCrop: Float = 1.0f,
 )
 
+@Serializable
 enum class MaskShape(val label: String, val code: Int) {
     NONE("None", 0),
     SPLIT("Split", 1),
@@ -431,6 +444,7 @@ enum class MaskShape(val label: String, val code: Int) {
     STAR("Star", 6),
 }
 
+@Serializable
 data class MaskSettings(
     val shape: MaskShape = MaskShape.NONE,
     val feather: Float = 0.08f,
@@ -438,12 +452,14 @@ data class MaskSettings(
     val sizeScale: Float = 0.72f,
 )
 
+@Serializable
 enum class MotionBlurDirection(val label: String) {
     BOTH("Both"),
     FORWARD("Forward"),
     BACKWARD("Backward"),
 }
 
+@Serializable
 data class MotionBlurSettings(
     val enabled: Boolean = false,
     val blurAmount: Float = 0.5f,
@@ -452,6 +468,7 @@ data class MotionBlurSettings(
     val times: Int = 2,
 )
 
+@Serializable
 enum class StabilizeMode(val label: String) {
     OFF("None"),
     MINIMAL("Minimal cropping"),
@@ -459,12 +476,14 @@ enum class StabilizeMode(val label: String) {
     MOST_STABLE("Most stable"),
 }
 
+@Serializable
 enum class AnimationCategory(val label: String) {
     IN("In"),
     OUT("Out"),
     COMBO("Combo"),
 }
 
+@Serializable
 enum class ClipAnimationType(val label: String, val code: Int) {
     NONE("None", 0),
     TRICKLING("Trickling", 1),
@@ -476,6 +495,7 @@ enum class ClipAnimationType(val label: String, val code: Int) {
     GLITCH("Glitch", 7),
 }
 
+@Serializable
 data class AnimationSettings(
     val inType: ClipAnimationType = ClipAnimationType.NONE,
     val inDurationSec: Float = 0.5f,
@@ -485,6 +505,7 @@ data class AnimationSettings(
     val comboDurationSec: Float = 0.8f,
 )
 
+@Serializable
 enum class TransitionType(val label: String, val code: Int) {
     NONE("None", 0),
     DREAMY_FLASH("Dreamy Flash", 1),
@@ -496,6 +517,7 @@ enum class TransitionType(val label: String, val code: Int) {
     PULSE_FADE("Pulse Fade", 7),
 }
 
+@Serializable
 data class TransitionSpec(
     val id: String = UUID.randomUUID().toString(),
     val afterClipId: String,
@@ -503,6 +525,7 @@ data class TransitionSpec(
     val durationSec: Float = 0.4f,
 )
 
+@Serializable
 enum class EffectMainTab(val label: String) {
     VIDEO("Video effects"),
     BODY("Body effects"),
@@ -510,12 +533,14 @@ enum class EffectMainTab(val label: String) {
     AI("AI effects"),
 }
 
+@Serializable
 enum class EffectSubCategory(val label: String) {
     TRENDING("Trending"),
     CLASSIC("Classic"),
     NEW("NEW"),
 }
 
+@Serializable
 enum class CapCutEffectType(
     val label: String,
     val code: Int,
@@ -537,6 +562,7 @@ enum class CapCutEffectType(
     TRACKING_GLITCH("Tracking Glitch", 12, EffectMainTab.AI, EffectSubCategory.TRENDING),
 }
 
+@Serializable
 data class VideoEffectLayer(
     val id: String = UUID.randomUUID().toString(),
     val type: CapCutEffectType,
@@ -546,6 +572,7 @@ data class VideoEffectLayer(
     val applyToAllVideos: Boolean = false,
 )
 
+@Serializable
 enum class HslColorBand(val label: String, val colorArgb: Long, val hueCenterDeg: Float) {
     RED("Red", 0xFFEF4444L, 0f),
     ORANGE("Orange", 0xFFF97316L, 28f),
@@ -557,12 +584,14 @@ enum class HslColorBand(val label: String, val colorArgb: Long, val hueCenterDeg
     MAGENTA("Magenta", 0xFFEC4899L, 320f),
 }
 
+@Serializable
 data class HslBandValue(
     val hue: Float = 0f,        // -50f..50f
     val saturation: Float = 0f, // -50f..50f
     val lightness: Float = 0f,  // -50f..50f
 )
 
+@Serializable
 data class ColorWheelSpec(
     val liftHueDeg: Float = 0f,
     val liftAmount: Float = 0f, // 0f..1f
@@ -575,6 +604,7 @@ data class ColorWheelSpec(
     val gainLuma: Float = 0f,
 )
 
+@Serializable
 enum class CurveChannel(val label: String, val accentArgb: Long) {
     WHITE("White", 0xFFF4F5FAL),
     RED("Red", 0xFFEF4444L),
@@ -582,11 +612,13 @@ enum class CurveChannel(val label: String, val accentArgb: Long) {
     BLUE("Blue", 0xFF3B82F6L),
 }
 
+@Serializable
 data class CurvePoint(
     val x: Float, // 0f..1f
     val y: Float, // 0f..1f
 )
 
+@Serializable
 data class RgbCurvesSpec(
     val white: List<CurvePoint> = defaultCurvePoints(),
     val red: List<CurvePoint> = defaultCurvePoints(),
@@ -617,6 +649,7 @@ data class RgbCurvesSpec(
     }
 }
 
+@Serializable
 data class AdjustSettings(
     val brightness: Float = 0f,   // -50..50
     val contrast: Float = 0f,     // -50..50
@@ -653,6 +686,7 @@ data class AdjustSettings(
             abs(colorWheel.gainLuma) > 0.01f
 }
 
+@Serializable
 enum class OverlayBlendMode(val label: String) {
     NORMAL("Normal"),
     FILTER("Filter"),
@@ -661,6 +695,7 @@ enum class OverlayBlendMode(val label: String) {
     LIGHTEN("Lighten"),
 }
 
+@Serializable
 data class OverlayTrackItem(
     val id: String = UUID.randomUUID().toString(),
     val uriString: String,
@@ -681,6 +716,7 @@ data class OverlayTrackItem(
     val chromaShadow: Float = 0.15f,
 )
 
+@Serializable
 data class AudioTrackItem(
     val id: String = UUID.randomUUID().toString(),
     val uriString: String? = null,
@@ -693,6 +729,7 @@ data class AudioTrackItem(
     val volumeKeyframes: List<VolumeKeyframeNode> = emptyList(),
 )
 
+@Serializable
 data class TextTrackItem(
     val id: String = UUID.randomUUID().toString(),
     val text: String,
@@ -709,15 +746,21 @@ data class TextTrackItem(
     val keyframes: List<TextKeyframeNode> = emptyList(),
 )
 
+@Serializable
 data class VideoClipSegment(
     val id: String = UUID.randomUUID().toString(),
     val sourceUriString: String? = null,
     val displayName: String = "Main Clip",
+    val width: Int = 1920,
+    val height: Int = 1080,
     val timelineStartMs: Long = 0L,
     val trimStartMs: Long = 0L,
     val trimEndMs: Long = 8_000L,
     val sourceDurationMs: Long = 8_000L,
     val isReversed: Boolean = false,
+    val reversedUriString: String? = null,
+    val reverseAudio: Boolean = true,
+    val cutFlashPunchOnStart: Boolean = false,
     val isFrozen: Boolean = false,
     val freezeAtMs: Long = 0L,
     val freezeDurationMs: Long = 3_000L,
@@ -730,6 +773,7 @@ data class VideoClipSegment(
     val speed: SpeedSettings = SpeedSettings(),
     val transform: TransformSettings = TransformSettings(),
     val crop: CropSettings = CropSettings(),
+    val adjust: AdjustSettings = AdjustSettings(),
     val mask: MaskSettings = MaskSettings(),
     val motionBlur: MotionBlurSettings = MotionBlurSettings(),
     val stabilize: StabilizeMode = StabilizeMode.OFF,
@@ -746,7 +790,56 @@ data class VideoClipSegment(
         val spd = speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
         return (baseDurationMs() / spd).toLong().coerceAtLeast(250L)
     }
+
+    fun hasReversedMediaReady(): Boolean = !reversedUriString.isNullOrBlank()
+
+    fun effectiveUriString(): String? =
+        if (isReversed && !reversedUriString.isNullOrBlank()) reversedUriString else sourceUriString
+
+    fun effectiveTrimStartMs(): Long = when {
+        isFrozen -> freezeAtMs.coerceAtLeast(0L)
+        isReversed && !reversedUriString.isNullOrBlank() -> 0L
+        else -> trimStartMs.coerceAtLeast(0L)
+    }
+
+    fun effectiveTrimEndMs(): Long = when {
+        isFrozen -> (freezeAtMs + 250L).coerceAtMost(sourceDurationMs.coerceAtLeast(300L))
+        isReversed && !reversedUriString.isNullOrBlank() -> baseDurationMs()
+        else -> trimEndMs.coerceAtLeast(trimStartMs + 250L)
+    }
+
+    fun effectiveSourceDurationMs(): Long =
+        if (isReversed && !reversedUriString.isNullOrBlank()) baseDurationMs() else sourceDurationMs
 }
+
+@Serializable
+data class TimelineSnapshot(
+    val clips: List<VideoClipSegment> = emptyList(),
+    val transitions: List<TransitionSpec> = emptyList(),
+    val effectLayers: List<VideoEffectLayer> = emptyList(),
+    val overlays: List<OverlayTrackItem> = emptyList(),
+    val audioTracks: List<AudioTrackItem> = emptyList(),
+    val textTracks: List<TextTrackItem> = emptyList(),
+    val adjust: AdjustSettings = AdjustSettings(),
+    val activePreset: FfxPreset = FfxPreset(),
+    val filterIntensity: Float = 1.0f,
+    val hasEndingCard: Boolean = false,
+    val canvasBackgroundArgb: Long = 0xFF05060AL,
+)
+
+@Serializable
+data class PersistedProjectState(
+    val projectId: String,
+    val title: String,
+    val aspectPreset: AspectPreset = AspectPreset.RATIO_9_16,
+    val resolutionLabel: String = "1080p",
+    val fps: Int = 30,
+    val canvasFitMode: CanvasFitMode = CanvasFitMode.FIT,
+    val playheadMs: Long = 0L,
+    val timelineZoom: Float = 1.0f,
+    val thumbnailPath: String? = null,
+    val snapshot: TimelineSnapshot,
+)
 
 data class ClipTimelineSpan(
     val clip: VideoClipSegment,
@@ -754,18 +847,22 @@ data class ClipTimelineSpan(
     val endMs: Long,
 )
 
+fun computeTotalVideoDurationMs(clips: List<VideoClipSegment>): Long {
+    if (clips.isEmpty()) return 1_000L
+    val clipEnd = clips.sortedBy { it.timelineStartMs }.maxOfOrNull { clip ->
+        clip.timelineStartMs.coerceAtLeast(0L) + clip.timelineDurationMs()
+    } ?: 0L
+    return clipEnd.coerceAtLeast(1_000L)
+}
+
 fun isTimelineItemActiveAt(
     startMs: Long,
     endMs: Long,
     playheadMs: Long,
-    hasNextContiguous: Boolean = false,
+    @Suppress("UNUSED_PARAMETER") hasNextContiguous: Boolean = false,
 ): Boolean {
     if (endMs <= startMs) return false
-    return if (hasNextContiguous) {
-        playheadMs >= startMs && playheadMs < endMs
-    } else {
-        playheadMs in startMs..endMs
-    }
+    return playheadMs >= startMs && playheadMs < endMs
 }
 
 fun findActiveSpanIndex(spans: List<ClipTimelineSpan>, playheadMs: Long): Int {
@@ -773,9 +870,21 @@ fun findActiveSpanIndex(spans: List<ClipTimelineSpan>, playheadMs: Long): Int {
         val span = spans[i]
         val hasNextContiguous = i < spans.lastIndex &&
             abs(spans[i + 1].startMs - span.endMs) <= 20L
-        if (isTimelineItemActiveAt(span.startMs, span.endMs, playheadMs, hasNextContiguous)) {
-            return i
+        val match = if (hasNextContiguous) {
+            playheadMs >= span.startMs && playheadMs < span.endMs
+        } else {
+            playheadMs in span.startMs..span.endMs
         }
+        if (match) return i
     }
+    return -1
+}
+
+fun findPreviewSpanIndex(spans: List<ClipTimelineSpan>, playheadMs: Long): Int {
+    if (spans.isEmpty()) return -1
+    val exact = findActiveSpanIndex(spans, playheadMs)
+    if (exact >= 0) return exact
+    val lastEnd = spans.maxOfOrNull { it.endMs } ?: 0L
+    if (playheadMs >= lastEnd) return spans.lastIndex
     return -1
 }

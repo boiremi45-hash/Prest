@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -96,6 +95,7 @@ enum class ActiveEditorSheet {
     AUDIO,
     ASPECT_RATIO,
     BACKGROUND,
+    REVERSE,
 }
 
 @Composable
@@ -108,7 +108,6 @@ fun CapCutMainBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .background(ObsidianBackground)
-            .navigationBarsPadding()
             .height(64.dp)
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 8.dp),
@@ -116,6 +115,9 @@ fun CapCutMainBottomBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ToolbarActionItem(Icons.Filled.ContentCut, "Edit", "menu_edit", onClick = onSelectEditClip)
+        ToolbarActionItem(Icons.Filled.Restore, "Reverse Clip", "menu_reverse_clip", highlightColor = CyberCyan) {
+            onOpenSheet(ActiveEditorSheet.REVERSE)
+        }
         ToolbarActionItem(Icons.Filled.MusicNote, "Audio", "menu_audio") { onOpenSheet(ActiveEditorSheet.AUDIO) }
         ToolbarActionItem(Icons.Filled.TextFields, "Text", "menu_text") { onOpenSheet(ActiveEditorSheet.TEXT) }
         ToolbarActionItem(Icons.Filled.AutoAwesome, "Effects", "menu_effects") { onOpenSheet(ActiveEditorSheet.EFFECTS) }
@@ -144,6 +146,7 @@ fun CapCutClipSelectedBar(
     onMoveToOverlay: () -> Unit,
     onFreeze: () -> Unit,
     onReverseToggle: () -> Unit,
+    onResetClipAll: () -> Unit,
     onOpenSheet: (ActiveEditorSheet) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -151,7 +154,6 @@ fun CapCutClipSelectedBar(
         modifier = modifier
             .fillMaxWidth()
             .background(ObsidianBackground)
-            .navigationBarsPadding()
             .height(64.dp)
             .padding(start = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -246,7 +248,7 @@ fun CapCutClipSelectedBar(
             )
             ToolbarActionItem(
                 icon = Icons.Filled.Restore,
-                label = "Reverse",
+                label = if (clip.isReversed) "Un-reverse" else "Reverse Clip",
                 tag = "clip_tool_reverse",
                 highlightColor = if (clip.isReversed) CyberCyan else Color.White,
                 onClick = onReverseToggle,
@@ -257,6 +259,12 @@ fun CapCutClipSelectedBar(
             ToolbarActionItem(Icons.Filled.LensBlur, "Stabilize", "clip_tool_stabilize") {
                 onOpenSheet(ActiveEditorSheet.STABILIZE)
             }
+            ToolbarActionItem(
+                icon = Icons.Filled.History,
+                label = "Reset Clip",
+                tag = "clip_tool_reset_all",
+                onClick = onResetClipAll,
+            )
         }
     }
 }
@@ -355,7 +363,6 @@ private fun CapCutContextualTrackBar(
         modifier = modifier
             .fillMaxWidth()
             .background(ObsidianBackground)
-            .navigationBarsPadding()
             .height(64.dp)
             .padding(start = 6.dp),
         verticalAlignment = Alignment.CenterVertically,

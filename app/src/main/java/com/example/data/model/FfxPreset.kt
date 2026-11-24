@@ -1,5 +1,7 @@
 package com.example.data.model
 
+import kotlinx.serialization.Serializable
+
 enum class PresetCategory(val label: String) {
     COLOR_GRADE("Color Grade"),
     MOTION_SHAKE("Motion & Shake"),
@@ -14,6 +16,7 @@ enum class PresetCategory(val label: String) {
     }
 }
 
+@Serializable
 data class FfxPreset(
     val id: String = "",
     val name: String = "",

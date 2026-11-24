@@ -290,4 +290,77 @@ class CapCutEngineTest {
         val withoutVolKfs = clip.copy(volumeKeyframes = emptyList(), volumePercent = 75)
         assertEquals(75, VolumeKeyframeEvaluator.evaluate(withoutVolKfs.volumeKeyframes, 2_000L, withoutVolKfs.volumePercent))
     }
+
+    @Test
+    fun totalDuration_equalsVideoClipsOnlyAndSpanMaps19sContiguously() {
+        val clip1 = VideoClipSegment(id = "c1", timelineStartMs = 0L, trimStartMs = 0L, trimEndMs = 10_000L, sourceDurationMs = 10_000L)
+        val clip2 = VideoClipSegment(id = "c2", timelineStartMs = 10_000L, trimStartMs = 0L, trimEndMs = 9_000L, sourceDurationMs = 9_000L)
+        val clips = listOf(clip1, clip2)
+        // Total duration strictly equals sum of video clips (19,000ms), never inflated by Text/Audio/Ending
+        assertEquals(19_000L, com.example.data.model.computeTotalVideoDurationMs(clips))
+
+        val spans = com.example.domain.video.VideoEffectsEngine.computeClipSpans(clips)
+        assertEquals(0L, spans[0].startMs)
+        assertEquals(10_000L, spans[0].endMs)
+        assertEquals(10_000L, spans[1].startMs)
+        assertEquals(19_000L, spans[1].endMs)
+        assertEquals(0, com.example.data.model.findPreviewSpanIndex(spans, 2_000L))
+        assertEquals(1, com.example.data.model.findPreviewSpanIndex(spans, 15_000L))
+        assertEquals(1, com.example.data.model.findPreviewSpanIndex(spans, 19_000L))
+    }
+
+    @Test
+    fun textVisibility_strictWindowAndPerClipAdjustIsolation() {
+        // 3s text starting at 5s is hidden before 5s and hidden cleanly at/after 8s
+        assertTrue(!com.example.data.model.isTimelineItemActiveAt(5_000L, 8_000L, 4_999L))
+        assertTrue(com.example.data.model.isTimelineItemActiveAt(5_000L, 8_000L, 5_000L))
+        assertTrue(com.example.data.model.isTimelineItemActiveAt(5_000L, 8_000L, 7_999L))
+        assertTrue(!com.example.data.model.isTimelineItemActiveAt(5_000L, 8_000L, 8_000L))
+
+        // Per-clip Adjust & Transform values stay strictly isolated between clips
+        val c1 = VideoClipSegment(id = "c1", adjust = AdjustSettings(brightness = 35f, contrast = 15f))
+        val c2 = VideoClipSegment(id = "c2", adjust = AdjustSettings())
+        assertEquals(35f, c1.adjust.brightness, 0.01f)
+        assertEquals(0f, c2.adjust.brightness, 0.01f)
+    }
+
+    @Test
+    fun persistedProjectState_andShortReverseCutRule() {
+        val state = com.example.data.model.PersistedProjectState(
+            projectId = "proj-1",
+            title = "My Edit",
+            playheadMs = 4_250L,
+            snapshot = com.example.data.model.TimelineSnapshot(
+                clips = listOf(
+                    VideoClipSegment(
+                        id = "v1",
+                        trimStartMs = 0L,
+                        trimEndMs = 800L,
+                        sourceDurationMs = 800L,
+                        isReversed = true,
+                        reverseAudio = true,
+                        adjust = AdjustSettings(saturation = 18f),
+                    ),
+                ),
+                textTracks = listOf(TextTrackItem(id = "tx1", text = "Hello", startMs = 1_000L, endMs = 3_000L)),
+            ),
+        )
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val encoded = json.encodeToString(com.example.data.model.PersistedProjectState.serializer(), state)
+        val decoded = json.decodeFromString(com.example.data.model.PersistedProjectState.serializer(), encoded)
+        assertEquals("proj-1", decoded.projectId)
+        assertEquals(4_250L, decoded.playheadMs)
+        assertEquals(18f, decoded.snapshot.clips.first().adjust.saturation, 0.01f)
+        assertEquals("Hello", decoded.snapshot.textTracks.first().text)
+
+        val shortClip = VideoClipSegment(id = "s", trimStartMs = 0L, trimEndMs = 750L, sourceDurationMs = 750L)
+        val longClip = VideoClipSegment(id = "l", trimStartMs = 0L, trimEndMs = 2_500L, sourceDurationMs = 2_500L)
+        // Single short clip reversed alone -> Style A (no flash/punch cut)
+        assertTrue(!com.example.ui.studio.StudioViewModel.shouldApplyShortReverseCutEffect(shortClip, isBatchReverseAll = false))
+        // Batch Reverse All Clips with 0.5s-1.0s clip -> Style B (flash/punch cut active)
+        assertTrue(com.example.ui.studio.StudioViewModel.shouldApplyShortReverseCutEffect(shortClip, isBatchReverseAll = true))
+        // Batch Reverse All Clips with >1.0s clip -> Style A
+        assertTrue(!com.example.ui.studio.StudioViewModel.shouldApplyShortReverseCutEffect(longClip, isBatchReverseAll = true))
+    }
 }
+

@@ -57,6 +57,7 @@ data class LunaShaderParams(
     val transitions: List<TimedTransitionWindow> = emptyList(),
     val opacityScale: Float = 1f,
     val timelineOffsetMs: Long = 0L,
+    val cutFlashPunchOnStart: Boolean = false,
 )
 
 @UnstableApi
@@ -176,6 +177,10 @@ private class LunaShaderProgram(
                 }
             }
         }
+        var cutFlashAmt = 0f
+        if (!params.bypass && params.cutFlashPunchOnStart && timeMs in 0L..55L) {
+            cutFlashAmt = (1f - (timeMs / 55f)).coerceIn(0f, 1f)
+        }
 
         try {
             program.use()
@@ -224,6 +229,7 @@ private class LunaShaderProgram(
             program.setFloatUniform("uAnimProg", animProg)
             program.setIntUniform("uTransCode", transCode)
             program.setFloatUniform("uTransProg", transProg)
+            program.setFloatUniform("uCutFlash", cutFlashAmt)
 
             program.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -284,6 +290,7 @@ uniform int uAnimCode;
 uniform float uAnimProg;
 uniform int uTransCode;
 uniform float uTransProg;
+uniform float uCutFlash;
 
 varying vec2 vTexSamplingCoord;
 
@@ -500,6 +507,11 @@ void main() {
         color += vec3(1.0, 0.95, 0.80) * sp * uTransProg * 1.4;
     } else if (uTransCode == 7) { // Pulse Fade
         color *= (1.0 - uTransProg * 0.85);
+    }
+
+    // 10b. Crisp 0.05s white flash for back-to-back short reversed clips
+    if (uCutFlash > 0.005) {
+        color = mix(color, vec3(1.0, 1.0, 1.0), uCutFlash * 0.88);
     }
 
     // 11. Shape Masking (Split=1, Filmstrip=2, Circle=3, Rectangle=4, Heart=5, Star=6)
