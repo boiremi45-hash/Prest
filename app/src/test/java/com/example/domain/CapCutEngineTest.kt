@@ -362,5 +362,346 @@ class CapCutEngineTest {
         // Batch Reverse All Clips with >1.0s clip -> Style A
         assertTrue(!com.example.ui.studio.StudioViewModel.shouldApplyShortReverseCutEffect(longClip, isBatchReverseAll = true))
     }
-}
 
+    @Test
+    fun keyframeZoomAndPositionOnly_keepsRotationLockedAtZero() {
+        val k1 = KeyframeNode(
+            id = "k1",
+            timeMs = 0L,
+            easingToNext = EasingGraph.LINEAR,
+            posX = 0f,
+            posY = 0f,
+            zoomPercent = 100f,
+            rotateDeg = 0f,
+        )
+        val k2 = KeyframeNode(
+            id = "k2",
+            timeMs = 4_000L,
+            easingToNext = EasingGraph.LINEAR,
+            posX = 0.45f,
+            posY = -0.30f,
+            zoomPercent = 240f,
+            rotateDeg = 0f,
+        )
+        listOf(0L, 1_000L, 2_000L, 3_000L, 4_000L).forEach { t ->
+            val eval = KeyframeEvaluator.evaluate(
+                keyframes = listOf(k1, k2),
+                localTimeMs = t,
+                baseTransform = TransformSettings(),
+                baseOpacity = 1f,
+                baseAdjust = AdjustSettings(),
+                baseFilterIntensity = 1f,
+            )
+            assertEquals("Rotation must stay locked at 0 deg at $t ms", 0f, eval.rotateDeg, 0.0001f)
+        }
+        val mid = KeyframeEvaluator.evaluate(
+            keyframes = listOf(k1, k2),
+            localTimeMs = 2_000L,
+            baseTransform = TransformSettings(),
+            baseOpacity = 1f,
+            baseAdjust = AdjustSettings(),
+            baseFilterIntensity = 1f,
+        )
+        assertEquals(170f, mid.zoomPercent, 0.01f)
+        assertEquals(0.225f, mid.posX, 0.001f)
+        assertEquals(-0.15f, mid.posY, 0.001f)
+
+        val txBase = TextTrackItem(text = "ZoomOnly", startMs = 0L, endMs = 4_000L)
+        val tk1 = TextKeyframeNode(id = "tk1", timeMs = 0L, scale = 1.0f, rotationDeg = 0f)
+        val tk2 = TextKeyframeNode(id = "tk2", timeMs = 4_000L, scale = 2.2f, rotationDeg = 0f)
+        val txMid = TextKeyframeEvaluator.evaluate(listOf(tk1, tk2), 2_000L, txBase)
+        assertEquals(1.6f, txMid.scale, 0.01f)
+        assertEquals(0f, txMid.rotationDeg, 0.0001f)
+    }
+
+    @Test
+    fun timelineWidth_scalesProportionallyWithDurationAt60PxPerSecond() {
+        val pxPerSec = 60f
+        val oneSecWidth = com.example.data.model.computeTimelineWidthPx(1_000L, pxPerSec)
+        val twentySecWidth = com.example.data.model.computeTimelineWidthPx(20_000L, pxPerSec)
+        assertEquals(60f, oneSecWidth, 0.01f)
+        assertEquals(1200f, twentySecWidth, 0.01f)
+        assertEquals(20f, twentySecWidth / oneSecWidth, 0.01f)
+    }
+
+    @Test
+    fun smoothReverseSpeedCurve_bezierRampMirrorsWithZeroDiscontinuityAtJoin() {
+        val clip1Speed = SpeedSettings(
+            mode = SpeedMode.CURVE,
+            smoothSlowMo = true,
+            smoothSlowMoBetterQuality = true,
+            curvePoints = listOf(10.0f, 0.1f),
+            curveControlPoints = listOf(
+                com.example.data.model.SpeedCurvePoint(0f, 10.0f),
+                com.example.data.model.SpeedCurvePoint(1f, 0.1f),
+            ),
+            curveBezierSmooth = true,
+        )
+        val clip2Speed = clip1Speed.mirrored()
+
+        assertEquals(10.0f, clip1Speed.speedAtProgress(0f), 0.001f)
+        assertEquals(0.1f, clip1Speed.speedAtProgress(1f), 0.001f)
+        // Smooth bezier midpoint falls cleanly halfway (5.05x) while staying strictly monotone
+        assertEquals(5.05f, clip1Speed.speedAtProgress(0.5f), 0.05f)
+        assertTrue(clip1Speed.speedAtProgress(0.25f) > clip1Speed.speedAtProgress(0.5f))
+        assertTrue(clip1Speed.speedAtProgress(0.5f) > clip1Speed.speedAtProgress(0.75f))
+
+        // Mirrored curve matches exact 0.1X at join point with zero jump and rises to 10.0X
+        assertEquals(0.1f, clip2Speed.speedAtProgress(0f), 0.001f)
+        assertEquals(10.0f, clip2Speed.speedAtProgress(1f), 0.001f)
+        assertEquals(clip1Speed.speedAtProgress(1f), clip2Speed.speedAtProgress(0f), 0.0001f)
+
+        // Timeline <-> source progress round-trip consistency across curved speed
+        listOf(0f, 0.25f, 0.5f, 0.75f, 1f).forEach { sp ->
+            val tp = clip1Speed.timelineProgressAtSourceProgress(sp)
+            val back = clip1Speed.sourceProgressAtTimelineProgress(tp)
+            assertEquals("Round-trip mismatch at sp=$sp", sp, back, 0.03f)
+        }
+    }
+
+    @Test
+    fun smoothReverseAutoTrim_selectsBest02To05sSegmentAndPreservesShortClips() {
+        val longClip = VideoClipSegment(
+            id = "long",
+            timelineStartMs = 0L,
+            trimStartMs = 0L,
+            trimEndMs = 10_000L,
+            sourceDurationMs = 10_000L,
+        )
+        val longWindow = com.example.ui.studio.StudioViewModel.selectBestSmoothReverseWindow(longClip)
+        val longLen = longWindow.second - longWindow.first
+        assertTrue("Expected 200..500ms window, got $longLen", longLen in 200L..500L)
+        assertEquals(400L, longLen)
+
+        val beatAnchoredClip = longClip.copy(beatMarkersMs = listOf(4_500L))
+        val beatWindow = com.example.ui.studio.StudioViewModel.selectBestSmoothReverseWindow(beatAnchoredClip)
+        assertEquals(400L, beatWindow.second - beatWindow.first)
+        assertEquals(4_500L, beatWindow.second)
+
+        val shortClip = VideoClipSegment(
+            id = "short",
+            timelineStartMs = 0L,
+            trimStartMs = 120L,
+            trimEndMs = 470L, // 350ms already <= 500ms
+            sourceDurationMs = 1_000L,
+        )
+        val shortWindow = com.example.ui.studio.StudioViewModel.selectBestSmoothReverseWindow(shortClip)
+        assertEquals(120L, shortWindow.first)
+        assertEquals(470L, shortWindow.second)
+    }
+
+    @Test
+    fun smoothReversePair_buildsContiguousMirroredPairWithCubicEasingAndZeroRotation() {
+        val sourceClip = VideoClipSegment(
+            id = "c1",
+            sourceUriString = "file:///tmp/sample.mp4",
+            displayName = "Clip 1",
+            timelineStartMs = 2_000L,
+            trimStartMs = 0L,
+            trimEndMs = 8_000L,
+            sourceDurationMs = 8_000L,
+        )
+        val (clip1, clip2) = com.example.ui.studio.StudioViewModel.buildSmoothReversePair(
+            sourceClip = sourceClip,
+            reversedUriString = "file:///tmp/sample_rev.mp4",
+            reversedClipId = "c2",
+            groupId = "grp-1",
+        )
+
+        assertEquals(com.example.data.model.SmoothReverseRole.ORIGINAL, clip1.smoothReverseRole)
+        assertEquals(com.example.data.model.SmoothReverseRole.REVERSED, clip2.smoothReverseRole)
+        assertEquals("grp-1", clip1.smoothReverseGroupId)
+        assertEquals("grp-1", clip2.smoothReverseGroupId)
+
+        // Step 2: Better Quality Smooth Slow-Mo & 10.0x <-> 0.1x speed curves
+        assertTrue(clip1.speed.smoothSlowMo && clip1.speed.smoothSlowMoBetterQuality)
+        assertTrue(clip2.speed.smoothSlowMo && clip2.speed.smoothSlowMoBetterQuality)
+        assertEquals(10.0f, clip1.speed.speedAtProgress(0f), 0.01f)
+        assertEquals(0.1f, clip1.speed.speedAtProgress(1f), 0.01f)
+        assertEquals(0.1f, clip2.speed.speedAtProgress(0f), 0.01f)
+        assertEquals(10.0f, clip2.speed.speedAtProgress(1f), 0.01f)
+
+        // Step 3 & 5: Cubic Out on Clip 1, Cubic In on Clip 2, Zoom 100%->140%->100%, Y 0->+0.20->0, Rotation locked 0
+        assertEquals(2, clip1.keyframes.size)
+        assertEquals(EasingGraph.CUBIC_OUT, clip1.keyframes[0].easingToNext)
+        assertEquals(100f, clip1.keyframes[0].zoomPercent, 0.01f)
+        assertEquals(140f, clip1.keyframes[1].zoomPercent, 0.01f)
+        assertEquals(0f, clip1.keyframes[0].posY, 0.001f)
+        assertEquals(0.20f, clip1.keyframes[1].posY, 0.001f)
+
+        assertEquals(2, clip2.keyframes.size)
+        assertEquals(EasingGraph.CUBIC_IN, clip2.keyframes[0].easingToNext)
+        assertEquals(140f, clip2.keyframes[0].zoomPercent, 0.01f)
+        assertEquals(100f, clip2.keyframes[1].zoomPercent, 0.01f)
+        assertEquals(0.20f, clip2.keyframes[0].posY, 0.001f)
+        assertEquals(0f, clip2.keyframes[1].posY, 0.001f)
+
+        val d1 = clip1.timelineDurationMs()
+        listOf(0L, d1 / 4, d1 / 2, (d1 * 3) / 4, d1).forEach { t ->
+            val e1 = KeyframeEvaluator.evaluate(clip1.keyframes, t, clip1.transform, 1f, clip1.adjust, 1f)
+            assertEquals(0f, e1.rotateDeg, 0.0001f)
+            val e2 = KeyframeEvaluator.evaluate(clip2.keyframes, t, clip2.transform, 1f, clip2.adjust, 1f)
+            assertEquals(0f, e2.rotateDeg, 0.0001f)
+        }
+
+        // Step 4: Clip 2 reversed & meets Clip 1 with zero gap and zero overlap
+        assertTrue(clip2.isReversed)
+        assertEquals(clip1.timelineStartMs + clip1.timelineDurationMs(), clip2.timelineStartMs)
+        assertEquals(clip1.baseDurationMs(), clip2.baseDurationMs())
+    }
+
+    @Test
+    fun timesliceSettings_samplesDirectionalTimeSpreadAndClampsToClipEnd() {
+        val ts = com.example.data.model.TimesliceSettings(
+            enabled = true,
+            slices = 10,
+            direction = com.example.data.model.TimesliceDirection.LEFT_TO_RIGHT,
+            timeSpreadSec = 0.1f,
+            feather = 25f,
+            intensity = 1.0f,
+        )
+        assertEquals(0L, ts.sampleTimeMs(0L, 0, 0L, 3_000L))
+        assertEquals(100L, ts.sampleTimeMs(0L, 1, 0L, 3_000L))
+        assertEquals(200L, ts.sampleTimeMs(0L, 2, 0L, 3_000L))
+        assertEquals(900L, ts.sampleTimeMs(0L, 9, 0L, 3_000L))
+        assertTrue(ts.isHorizontalSlices())
+
+        // Past clip end -> clamps strictly to last frame (clipEndMs)
+        val spread03 = ts.copy(timeSpreadSec = 0.3f)
+        assertEquals(2_000L, spread03.sampleTimeMs(2_000L, 0, 0L, 3_000L))
+        assertEquals(2_900L, spread03.sampleTimeMs(2_000L, 3, 0L, 3_000L))
+        assertEquals(3_000L, spread03.sampleTimeMs(2_000L, 4, 0L, 3_000L))
+        assertEquals(3_000L, spread03.sampleTimeMs(2_000L, 9, 0L, 3_000L))
+
+        // Right-to-Left flips visual slice order cleanly
+        val rtl = ts.copy(direction = com.example.data.model.TimesliceDirection.RIGHT_TO_LEFT)
+        assertEquals(900L, rtl.sampleTimeMs(0L, 0, 0L, 3_000L))
+        assertEquals(0L, rtl.sampleTimeMs(0L, 9, 0L, 3_000L))
+        assertTrue(rtl.isHorizontalSlices())
+
+        // Top-to-Bottom & Bottom-to-Top switch slice axis to vertical slices
+        val btt = ts.copy(direction = com.example.data.model.TimesliceDirection.BOTTOM_TO_TOP)
+        assertTrue(!btt.isHorizontalSlices())
+        assertEquals(900L, btt.sampleTimeMs(0L, 0, 0L, 3_000L))
+        assertEquals(0L, btt.sampleTimeMs(0L, 9, 0L, 3_000L))
+
+        // Slice count clamps cleanly within 3..30
+        assertEquals(3, ts.copy(slices = 1).clampedSlices())
+        assertEquals(30, ts.copy(slices = 50).clampedSlices())
+    }
+
+    @Test
+    fun timesliceSettings_persistsPerClipAndIsolatesSplitParts() {
+        val part1 = VideoClipSegment(id = "p1", timelineStartMs = 0L, trimStartMs = 0L, trimEndMs = 3_000L, sourceDurationMs = 6_000L)
+        val part2 = VideoClipSegment(
+            id = "p2",
+            timelineStartMs = 3_000L,
+            trimStartMs = 3_000L,
+            trimEndMs = 6_000L,
+            sourceDurationMs = 6_000L,
+            timeslice = com.example.data.model.TimesliceSettings(
+                enabled = true,
+                slices = 14,
+                direction = com.example.data.model.TimesliceDirection.TOP_TO_BOTTOM,
+                timeSpreadSec = 0.45f,
+                feather = 40f,
+                intensity = 0.85f,
+                previewEnabled = true,
+            ),
+        )
+        assertTrue(!part1.timeslice.enabled)
+        assertTrue(part2.timeslice.enabled)
+
+        val state = com.example.data.model.PersistedProjectState(
+            projectId = "ts-proj",
+            title = "Timeslice Edit",
+            snapshot = com.example.data.model.TimelineSnapshot(clips = listOf(part1, part2)),
+        )
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val encoded = json.encodeToString(com.example.data.model.PersistedProjectState.serializer(), state)
+        val decoded = json.decodeFromString(com.example.data.model.PersistedProjectState.serializer(), encoded)
+        assertTrue(!decoded.snapshot.clips[0].timeslice.enabled)
+        assertTrue(decoded.snapshot.clips[1].timeslice.enabled)
+        assertEquals(14, decoded.snapshot.clips[1].timeslice.slices)
+        assertEquals(com.example.data.model.TimesliceDirection.TOP_TO_BOTTOM, decoded.snapshot.clips[1].timeslice.direction)
+        assertEquals(0.45f, decoded.snapshot.clips[1].timeslice.timeSpreadSec, 0.001f)
+        assertEquals(40f, decoded.snapshot.clips[1].timeslice.feather, 0.01f)
+        assertEquals(0.85f, decoded.snapshot.clips[1].timeslice.intensity, 0.001f)
+    }
+
+    @Test
+    fun multiTrackTimeline_isolatesPerTrackSpansAndSupportsDynamicVideoTracks() {
+        val v1a = VideoClipSegment(id = "v1a", trackIndex = 0, timelineStartMs = 0L, trimStartMs = 0L, trimEndMs = 5_000L, sourceDurationMs = 5_000L)
+        val v1b = VideoClipSegment(id = "v1b", trackIndex = 0, timelineStartMs = 5_000L, trimStartMs = 0L, trimEndMs = 4_000L, sourceDurationMs = 4_000L)
+        val v2Pip = VideoClipSegment(id = "v2", trackIndex = 1, timelineStartMs = 1_500L, trimStartMs = 0L, trimEndMs = 6_000L, sourceDurationMs = 6_000L)
+        val v4Extra = VideoClipSegment(id = "v4", trackIndex = 3, timelineStartMs = 2_000L, trimStartMs = 0L, trimEndMs = 9_000L, sourceDurationMs = 9_000L)
+        val allClips = listOf(v4Extra, v2Pip, v1b, v1a)
+
+        val v1Spans = com.example.data.model.computeTrackSpans(allClips, 0)
+        val v2Spans = com.example.data.model.computeTrackSpans(allClips, 1)
+        val v3Spans = com.example.data.model.computeTrackSpans(allClips, 2)
+        val v4Spans = com.example.data.model.computeTrackSpans(allClips, 3)
+
+        assertEquals(listOf("v1a", "v1b"), v1Spans.map { it.clip.id })
+        assertEquals(listOf("v2"), v2Spans.map { it.clip.id })
+        assertEquals(1_500L, v2Spans[0].startMs)
+        assertEquals(7_500L, v2Spans[0].endMs)
+        assertTrue(v3Spans.isEmpty())
+        assertEquals(listOf("v4"), v4Spans.map { it.clip.id })
+
+        // Dynamic video track count automatically expands to cover V4 (4 video tracks + TEXT + A1 + A2)
+        val snap = com.example.data.model.TimelineSnapshot(clips = allClips)
+        assertEquals(4, snap.effectiveVideoTrackCount())
+        val normalized = snap.normalizedTrackConfigs()
+        assertTrue(normalized.any { it.kind == com.example.data.model.TimelineTrackKind.VIDEO && it.label == "V4" })
+        assertTrue(normalized.any { it.kind == com.example.data.model.TimelineTrackKind.TEXT && it.label == "TEXT" })
+        assertTrue(normalized.any { it.kind == com.example.data.model.TimelineTrackKind.AUDIO && it.label == "A1" })
+        assertTrue(normalized.any { it.kind == com.example.data.model.TimelineTrackKind.AUDIO && it.label == "A2" })
+
+        // Total duration covers V4 reaching 11,000ms without altering V1's span timings
+        assertEquals(11_000L, com.example.data.model.computeTotalVideoDurationMs(allClips))
+    }
+
+    @Test
+    fun multiTrackConfigs_preserveHideLockMuteHeightAndAudioSlotsThroughSerialization() {
+        val customTracks = com.example.data.model.defaultTimelineTracks(3).map { cfg ->
+            when (cfg.id) {
+                "track_video_1" -> cfg.copy(isHidden = true, isLocked = true, isMuted = true, heightDp = 82f)
+                "track_text_0" -> cfg.copy(isLocked = true)
+                "track_audio_1" -> cfg.copy(isMuted = true)
+                else -> cfg
+            }
+        }
+        val snapshot = com.example.data.model.TimelineSnapshot(
+            clips = listOf(
+                VideoClipSegment(id = "c1", trackIndex = 0, timelineStartMs = 0L, trimEndMs = 4_000L),
+                VideoClipSegment(id = "c2", trackIndex = 1, timelineStartMs = 1_000L, trimEndMs = 3_000L),
+            ),
+            audioTracks = listOf(
+                com.example.data.model.AudioTrackItem(id = "a1", title = "BG Music", trackIndex = 0, startMs = 0L, endMs = 4_000L),
+                com.example.data.model.AudioTrackItem(id = "a2", title = "Voiceover", trackIndex = 1, startMs = 500L, endMs = 3_500L),
+            ),
+            trackConfigs = customTracks,
+        )
+        val state = com.example.data.model.PersistedProjectState(
+            projectId = "mt-proj",
+            title = "Multi-Track Edit",
+            snapshot = snapshot,
+        )
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val encoded = json.encodeToString(com.example.data.model.PersistedProjectState.serializer(), state)
+        val decoded = json.decodeFromString(com.example.data.model.PersistedProjectState.serializer(), encoded)
+
+        val dSnap = decoded.snapshot
+        assertTrue(!dSnap.isVideoTrackHidden(0))
+        assertTrue(dSnap.isVideoTrackHidden(1))
+        assertTrue(dSnap.isVideoTrackLocked(1))
+        assertTrue(dSnap.isVideoTrackMuted(1))
+        assertEquals(82f, dSnap.trackConfigFor(com.example.data.model.TimelineTrackKind.VIDEO, 1)?.heightDp ?: 0f, 0.01f)
+        assertTrue(dSnap.isTextTrackLocked())
+        assertTrue(!dSnap.isAudioTrackMuted(0))
+        assertTrue(dSnap.isAudioTrackMuted(1))
+        assertEquals(0, dSnap.audioTracks[0].trackIndex)
+        assertEquals(1, dSnap.audioTracks[1].trackIndex)
+    }
+}

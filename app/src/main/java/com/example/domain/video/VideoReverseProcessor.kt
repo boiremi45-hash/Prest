@@ -60,20 +60,22 @@ object VideoReverseProcessor {
         reverseAudio: Boolean,
         targetWidth: Int,
         targetHeight: Int,
+        minFrameGapUs: Long = 30_000L,
         onProgress: (percent: Int, label: String) -> Unit,
     ): Result<ReverseResult> = withContext(Dispatchers.IO) {
         val workDir = File(context.cacheDir, "rev_tmp_${UUID.randomUUID()}").apply { mkdirs() }
         val outDir = File(context.filesDir, "luna_media/reversed").apply { mkdirs() }
-        val outFile = File(outDir, "rev_${clipId.take(12)}_${trimStartMs}_${trimEndMs}_${if (reverseAudio) "ra" else "fa"}.mp4")
+        val qualityTag = if (minFrameGapUs < 25_000L) "_hq" else ""
+        val outFile = File(outDir, "rev_${clipId.take(12)}_${trimStartMs}_${trimEndMs}_${if (reverseAudio) "ra" else "fa"}$qualityTag.mp4")
         if (outFile.exists()) outFile.delete()
 
         try {
             onProgress(3, "Inspecting source clip...")
             val meta = VideoExportManager.readVideoMetadata(context, sourceUri)
-            val srcDurMs = meta.durationMs.coerceAtLeast(500L)
-            val safeStartMs = trimStartMs.coerceIn(0L, (srcDurMs - 250L).coerceAtLeast(0L))
-            val safeEndMs = trimEndMs.coerceIn(safeStartMs + 250L, srcDurMs)
-            val spanDurMs = (safeEndMs - safeStartMs).coerceAtLeast(250L)
+            val srcDurMs = meta.durationMs.coerceAtLeast(250L)
+            val safeStartMs = trimStartMs.coerceIn(0L, (srcDurMs - 200L).coerceAtLeast(0L))
+            val safeEndMs = trimEndMs.coerceIn(safeStartMs + 200L, srcDurMs)
+            val spanDurMs = (safeEndMs - safeStartMs).coerceAtLeast(200L)
 
             // Cap encoding resolution cleanly at <= 1080p even numbers for fast, reliable MediaCodec surface encoding
             val rawW = targetWidth.takeIf { it > 0 } ?: meta.width.takeIf { it > 0 } ?: 1280
@@ -91,6 +93,7 @@ object VideoReverseProcessor {
                 targetW = encW,
                 targetH = encH,
                 tempDir = workDir,
+                minFrameGapUs = minFrameGapUs,
                 onDecodeProgress = { p -> onProgress(8 + (p * 0.42f).roundToInt(), "Decoding video frames...") },
             )
 
@@ -154,15 +157,16 @@ object VideoReverseProcessor {
         targetW: Int,
         targetH: Int,
         tempDir: File,
+        minFrameGapUs: Long,
         onDecodeProgress: (Float) -> Unit,
     ): List<File> {
         val codecFrames = runCatching {
-            extractFramesViaMediaCodec(context, uri, startMs, endMs, targetW, targetH, tempDir, onDecodeProgress)
+            extractFramesViaMediaCodec(context, uri, startMs, endMs, targetW, targetH, tempDir, minFrameGapUs, onDecodeProgress)
         }.getOrDefault(emptyList())
         if (codecFrames.size >= 2) return codecFrames
 
         // Robust fallback via MediaMetadataRetriever if hardware decoder SurfaceTexture yielded 0 frames
-        return extractFramesViaRetriever(context, uri, startMs, endMs, targetW, targetH, tempDir, onDecodeProgress)
+        return extractFramesViaRetriever(context, uri, startMs, endMs, targetW, targetH, tempDir, minFrameGapUs, onDecodeProgress)
     }
 
     private fun extractFramesViaMediaCodec(
@@ -173,6 +177,7 @@ object VideoReverseProcessor {
         targetW: Int,
         targetH: Int,
         tempDir: File,
+        minFrameGapUs: Long,
         onDecodeProgress: (Float) -> Unit,
     ): List<File> {
         val extractor = MediaExtractor()
@@ -209,9 +214,8 @@ object VideoReverseProcessor {
                 var sawInputEOS = false
                 var sawOutputEOS = false
                 var lastSavedUs = Long.MIN_VALUE
-                // Cap ~30fps (~33ms minimum frame gap) so 120fps footage stays nimble and clean
-                val minFrameGapUs = 30_000L
-                val maxFrames = ((spanUs / 30_000L).toInt() + 10).coerceIn(12, 900)
+                val safeGapUs = minFrameGapUs.coerceAtLeast(8_000L)
+                val maxFrames = ((spanUs / safeGapUs).toInt() + 12).coerceIn(12, 900)
 
                 while (!sawOutputEOS && results.size < maxFrames) {
                     if (!sawInputEOS) {
@@ -235,7 +239,7 @@ object VideoReverseProcessor {
                         val ptsUs = bufferInfo.presentationTimeUs
                         val eos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                         val inWindow = bufferInfo.size > 0 && ptsUs >= startUs - 15_000L && ptsUs <= endUs + 15_000L
-                        val spacedOk = lastSavedUs == Long.MIN_VALUE || (ptsUs - lastSavedUs) >= minFrameGapUs
+                        val spacedOk = lastSavedUs == Long.MIN_VALUE || (ptsUs - lastSavedUs) >= safeGapUs
 
                         val render = inWindow && spacedOk
                         decoder.releaseOutputBuffer(outIdx, render)
@@ -276,14 +280,15 @@ object VideoReverseProcessor {
         targetW: Int,
         targetH: Int,
         tempDir: File,
+        minFrameGapUs: Long,
         onDecodeProgress: (Float) -> Unit,
     ): List<File> {
         val retriever = MediaMetadataRetriever()
         val files = mutableListOf<File>()
         try {
             retriever.setDataSource(context, uri)
-            val spanMs = (endMs - startMs).coerceAtLeast(250L)
-            val fps = 24
+            val spanMs = (endMs - startMs).coerceAtLeast(200L)
+            val fps = if (minFrameGapUs <= 18_000L) 60 else 24
             val totalFrames = ((spanMs * fps) / 1000L).toInt().coerceIn(8, 360)
             for (i in 0 until totalFrames) {
                 val frac = if (totalFrames <= 1) 0f else i.toFloat() / (totalFrames - 1).toFloat()
@@ -319,10 +324,11 @@ object VideoReverseProcessor {
         outputFile: File,
         onEncodeProgress: (Float) -> Unit,
     ) {
+        val encFps = if (totalDurationMs <= 650L && frameFiles.size > 16) 60 else 30
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, (width * height * 6).coerceIn(2_000_000, 14_000_000))
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_FRAME_RATE, encFps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
         val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -338,10 +344,10 @@ object VideoReverseProcessor {
             encoder.start()
             inputSurface.makeCurrent()
 
-            val totalNs = totalDurationMs.coerceAtLeast(250L) * 1_000_000L
+            val totalNs = totalDurationMs.coerceAtLeast(200L) * 1_000_000L
             val reversed = frameFiles.asReversed()
             val count = reversed.size
-            val stepNs = (totalNs / count.coerceAtLeast(1)).coerceAtLeast(16_666_666L)
+            val stepNs = (totalNs / count.coerceAtLeast(1)).coerceAtLeast(8_333_333L)
             val bufferInfo = MediaCodec.BufferInfo()
 
             fun drainEncoder(endOfStream: Boolean) {

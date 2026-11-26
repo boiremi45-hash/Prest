@@ -16,6 +16,7 @@ import com.example.data.model.CapCutEffectType
 import com.example.data.model.ClipTimelineSpan
 import com.example.data.model.CropSettings
 import com.example.data.model.CurvePoint
+import com.example.data.model.CurveSpeedPreset
 import com.example.data.model.EasingGraph
 import com.example.data.model.ExportRecord
 import com.example.data.model.FfxPreset
@@ -27,12 +28,19 @@ import com.example.data.model.MotionBlurSettings
 import com.example.data.model.OverlayTrackItem
 import com.example.data.model.PersistedProjectState
 import com.example.data.model.RgbCurvesSpec
+import com.example.data.model.SmoothReverseConfig
+import com.example.data.model.SmoothReverseRole
+import com.example.data.model.SpeedCurvePoint
+import com.example.data.model.SpeedMode
 import com.example.data.model.SpeedSettings
 import com.example.data.model.StabilizeMode
 import com.example.data.model.TextKeyframeEvaluator
 import com.example.data.model.TextKeyframeNode
 import com.example.data.model.TextTrackItem
 import com.example.data.model.TimelineSnapshot
+import com.example.data.model.TimelineTrackConfig
+import com.example.data.model.TimelineTrackKind
+import com.example.data.model.TimesliceSettings
 import com.example.data.model.TransformSettings
 import com.example.data.model.TransitionSpec
 import com.example.data.model.TransitionType
@@ -41,6 +49,8 @@ import com.example.data.model.VideoEffectLayer
 import com.example.data.model.VolumeKeyframeEvaluator
 import com.example.data.model.VolumeKeyframeNode
 import com.example.data.model.computeTotalVideoDurationMs
+import com.example.data.model.computeTrackSpans
+import com.example.data.model.defaultTimelineTracks
 import com.example.data.model.fillCanvasZoomPercent
 import com.example.data.repository.PresetRepository
 import com.example.domain.ffx.FfxParser
@@ -405,7 +415,10 @@ class StudioViewModel(
         undoStack.clear()
         redoStack.clear()
         syncUndoRedoFlags()
-        _snapshot.value = state.snapshot
+        _snapshot.value = state.snapshot.copy(
+            videoTrackCount = state.snapshot.effectiveVideoTrackCount(),
+            trackConfigs = state.snapshot.normalizedTrackConfigs(),
+        )
         _playheadMs.value = state.playheadMs.coerceIn(0L, computeTotalVideoDurationMs(state.snapshot.clips))
         _filmstripThumbnails.value = emptyList()
         _clipThumbnails.value = emptyMap()
@@ -451,7 +464,13 @@ class StudioViewModel(
         scheduleAutosave()
     }
 
-    fun selectVideo(context: Context, uri: Uri, replaceSelectedClip: Boolean = false, appendNew: Boolean = false) {
+    fun selectVideo(
+        context: Context,
+        uri: Uri,
+        replaceSelectedClip: Boolean = false,
+        appendNew: Boolean = false,
+        targetTrackIndex: Int = 0,
+    ) {
         hasModifiedInSession = true
         viewModelScope.launch {
             val persistedUri = repository.persistMediaLocally(context, uri, "videos")
@@ -459,7 +478,7 @@ class StudioViewModel(
             val dur = metadata.durationMs.takeIf { it > 400L } ?: 8_000L
             val clipId = if (replaceSelectedClip && _selectedClipId.value != null) {
                 _selectedClipId.value!!
-            } else if (!appendNew && _snapshot.value.clips.all { it.sourceUriString.isNullOrBlank() }) {
+            } else if (!appendNew && targetTrackIndex == 0 && _snapshot.value.clips.all { it.sourceUriString.isNullOrBlank() }) {
                 _snapshot.value.clips.firstOrNull()?.id ?: UUID.randomUUID().toString()
             } else {
                 UUID.randomUUID().toString()
@@ -477,36 +496,56 @@ class StudioViewModel(
                     _filmstripThumbnails.value = thumbs
                 }
             }
-            if (_selectedVideo.value == null || !appendNew) {
+            if (_selectedVideo.value == null || (!appendNew && targetTrackIndex == 0)) {
                 _selectedVideo.value = metadata
             }
             _exportState.value = ExportUiState.Idle
-            val realClips = _snapshot.value.clips.filter { !it.sourceUriString.isNullOrBlank() }
-            val nextTimelineStart = realClips.maxOfOrNull { it.timelineStartMs + it.timelineDurationMs() } ?: 0L
+            val realClipsOnTarget = _snapshot.value.clips.filter {
+                !it.sourceUriString.isNullOrBlank() && it.trackIndex == targetTrackIndex
+            }
+            val nextTimelineStart = if (targetTrackIndex == 0) {
+                realClipsOnTarget.maxOfOrNull { it.timelineStartMs + it.timelineDurationMs() } ?: 0L
+            } else {
+                val playPos = _playheadMs.value
+                val trackEnd = realClipsOnTarget.maxOfOrNull { it.timelineStartMs + it.timelineDurationMs() } ?: 0L
+                if (realClipsOnTarget.any { playPos in it.timelineStartMs..(it.timelineStartMs + it.timelineDurationMs()) }) {
+                    trackEnd
+                } else {
+                    playPos
+                }
+            }
+            val safeTrack = targetTrackIndex.coerceIn(0, _snapshot.value.effectiveVideoTrackCount() - 1)
             val newSegment = VideoClipSegment(
                 id = clipId,
                 sourceUriString = persistedUri.toString(),
                 displayName = metadata.displayName,
+                trackIndex = safeTrack,
                 width = metadata.width,
                 height = metadata.height,
-                timelineStartMs = if (appendNew && realClips.isNotEmpty()) nextTimelineStart else 0L,
+                timelineStartMs = if (appendNew && (_snapshot.value.clips.any { !it.sourceUriString.isNullOrBlank() } || safeTrack > 0)) nextTimelineStart else 0L,
                 trimStartMs = 0L,
                 trimEndMs = dur,
                 sourceDurationMs = dur,
             )
             mutate { s ->
                 val updatedClips = when {
-                    appendNew && s.clips.any { !it.sourceUriString.isNullOrBlank() } ->
+                    appendNew && (s.clips.any { !it.sourceUriString.isNullOrBlank() } || safeTrack > 0) ->
                         s.clips + newSegment
                     replaceSelectedClip && _selectedClipId.value != null ->
                         s.clips.map {
-                            if (it.id == _selectedClipId.value) newSegment.copy(id = it.id, timelineStartMs = it.timelineStartMs) else it
+                            if (it.id == _selectedClipId.value) {
+                                newSegment.copy(id = it.id, trackIndex = it.trackIndex, timelineStartMs = it.timelineStartMs)
+                            } else it
                         }
                     else -> listOf(newSegment.copy(timelineStartMs = 0L))
                 }
                 s.copy(clips = updatedClips)
             }
-            if (!appendNew) _playheadMs.value = 0L
+            if (safeTrack > 0) {
+                selectClip(clipId)
+            } else if (!appendNew) {
+                _playheadMs.value = 0L
+            }
             val thumbPath = repository.saveProjectThumbnail(context, _activeProjectId.value, persistedUri, 0L)
             if (thumbPath != null) _activeProjectThumbnailPath.value = thumbPath
             saveProjectImmediately()
@@ -517,15 +556,27 @@ class StudioViewModel(
 
     fun clipSpans(): List<ClipTimelineSpan> = VideoEffectsEngine.computeClipSpans(_snapshot.value.clips)
 
+    fun trackSpans(trackIndex: Int): List<ClipTimelineSpan> = computeTrackSpans(_snapshot.value.clips, trackIndex)
+
     fun activeClipAtPlayhead(): VideoClipSegment {
-        val spans = clipSpans()
+        val snap = _snapshot.value
         val t = _playheadMs.value
-        val byId = _selectedClipId.value?.let { id -> _snapshot.value.clips.firstOrNull { it.id == id } }
-        val activeIdx = com.example.data.model.findActiveSpanIndex(spans, t)
-        return byId
-            ?: spans.getOrNull(activeIdx)?.clip
-            ?: spans.firstOrNull()?.clip
-            ?: _snapshot.value.clips.firstOrNull()
+        val byId = _selectedClipId.value?.let { id -> snap.clips.firstOrNull { it.id == id } }
+        if (byId != null) return byId
+
+        val v1Spans = computeTrackSpans(snap.clips, 0)
+        val v1Idx = com.example.data.model.findActiveSpanIndex(v1Spans, t)
+        if (v1Idx >= 0 && !snap.isVideoTrackHidden(0)) return v1Spans[v1Idx].clip
+
+        for (idx in (snap.effectiveVideoTrackCount() - 1) downTo 0) {
+            if (!snap.isVideoTrackHidden(idx)) {
+                val trackSp = computeTrackSpans(snap.clips, idx)
+                val active = com.example.data.model.findActiveSpanIndex(trackSp, t)
+                if (active >= 0) return trackSp[active].clip
+            }
+        }
+        return v1Spans.firstOrNull()?.clip
+            ?: snap.clips.firstOrNull()
             ?: VideoClipSegment(id = "clip_main_1", displayName = "Import Video Clip")
     }
 
@@ -533,14 +584,122 @@ class StudioViewModel(
         _playheadMs.value = ms.coerceIn(0L, totalTimelineDurationMs())
     }
 
+    // --- Multi-Track Layout Controls ---
+    fun addVideoTrack() {
+        val curCount = _snapshot.value.effectiveVideoTrackCount()
+        if (curCount >= 8) {
+            _statusMessage.value = "Maximum 8 video tracks supported."
+            return
+        }
+        val nextIdx = curCount
+        val nextTrack = TimelineTrackConfig(
+            id = "track_video_$nextIdx",
+            kind = TimelineTrackKind.VIDEO,
+            trackIndex = nextIdx,
+            label = "V${nextIdx + 1}",
+            subtitle = "Video layer",
+            heightDp = 50f,
+        )
+        mutate { s ->
+            val baseConfigs = s.normalizedTrackConfigs()
+            val insertAfterIdx = baseConfigs.indexOfLast { it.kind == TimelineTrackKind.VIDEO }
+            val updated = if (insertAfterIdx >= 0) {
+                baseConfigs.toMutableList().apply { add(insertAfterIdx + 1, nextTrack) }
+            } else {
+                baseConfigs + nextTrack
+            }
+            s.copy(videoTrackCount = curCount + 1, trackConfigs = updated)
+        }
+        _statusMessage.value = "Added track V${nextIdx + 1}"
+    }
+
+    fun toggleTrackHidden(trackId: String) {
+        mutate { s ->
+            val updated = s.normalizedTrackConfigs().map { cfg ->
+                if (cfg.id == trackId) cfg.copy(isHidden = !cfg.isHidden) else cfg
+            }
+            s.copy(trackConfigs = updated)
+        }
+    }
+
+    fun toggleTrackLocked(trackId: String) {
+        mutate { s ->
+            val updated = s.normalizedTrackConfigs().map { cfg ->
+                if (cfg.id == trackId) cfg.copy(isLocked = !cfg.isLocked) else cfg
+            }
+            s.copy(trackConfigs = updated)
+        }
+    }
+
+    fun toggleTrackMuted(trackId: String) {
+        mutate { s ->
+            val updated = s.normalizedTrackConfigs().map { cfg ->
+                if (cfg.id == trackId) cfg.copy(isMuted = !cfg.isMuted) else cfg
+            }
+            s.copy(trackConfigs = updated)
+        }
+    }
+
+    fun resizeTrackHeight(trackId: String, newHeightDp: Float) {
+        val clamped = newHeightDp.coerceIn(30f, 120f)
+        mutate(pushHistory = false) { s ->
+            val updated = s.normalizedTrackConfigs().map { cfg ->
+                if (cfg.id == trackId) cfg.copy(heightDp = clamped) else cfg
+            }
+            s.copy(trackConfigs = updated)
+        }
+    }
+
+    fun moveVideoClipToTrack(clipId: String, targetTrackIndex: Int) {
+        val snap = _snapshot.value
+        val clip = snap.clips.firstOrNull { it.id == clipId } ?: return
+        val maxIdx = snap.effectiveVideoTrackCount() - 1
+        val safeTarget = targetTrackIndex.coerceIn(0, maxIdx)
+        if (safeTarget == clip.trackIndex) return
+        if (snap.isVideoTrackLocked(clip.trackIndex) || snap.isVideoTrackLocked(safeTarget)) {
+            _statusMessage.value = "Unlock track before moving clips."
+            return
+        }
+        mutate(pushHistory = false) { s ->
+            s.copy(
+                clips = s.clips.map { c ->
+                    if (c.id == clipId) c.copy(trackIndex = safeTarget) else c
+                }
+            )
+        }
+    }
+
+    fun moveAudioToSlot(audioId: String, targetTrackIndex: Int) {
+        val snap = _snapshot.value
+        val au = snap.audioTracks.firstOrNull { it.id == audioId } ?: return
+        val safeTarget = targetTrackIndex.coerceIn(0, 1)
+        if (safeTarget == au.trackIndex) return
+        if (snap.isAudioTrackLocked(au.trackIndex) || snap.isAudioTrackLocked(safeTarget)) {
+            _statusMessage.value = "Unlock audio track before moving."
+            return
+        }
+        mutate(pushHistory = false) { s ->
+            s.copy(
+                audioTracks = s.audioTracks.map { item ->
+                    if (item.id == audioId) item.copy(trackIndex = safeTarget) else item
+                }
+            )
+        }
+    }
+
     // --- Clip Editing Operations ---
     fun splitSelectedOrActiveClip() {
-        val spans = clipSpans()
+        val snap = _snapshot.value
         val t = _playheadMs.value
-        val activeIdx = com.example.data.model.findActiveSpanIndex(spans, t)
-        val targetSpan = (_selectedClipId.value?.let { id -> spans.firstOrNull { it.clip.id == id } }
-            ?: spans.getOrNull(activeIdx)) ?: return
+        val targetClip = _selectedClipId.value?.let { id -> snap.clips.firstOrNull { it.id == id } }
+            ?: activeClipAtPlayhead()
+        val trackSpans = computeTrackSpans(snap.clips, targetClip.trackIndex)
+        val targetSpan = trackSpans.firstOrNull { it.clip.id == targetClip.id } ?: return
         val clip = targetSpan.clip
+        if (snap.isVideoTrackLocked(clip.trackIndex)) {
+            _statusMessage.value = "V${clip.trackIndex + 1} is locked."
+            return
+        }
         val localMs = t - targetSpan.startMs
         val clipLen = targetSpan.endMs - targetSpan.startMs
         if (localMs < 300L || clipLen - localMs < 300L) {
@@ -585,6 +744,9 @@ class StudioViewModel(
 
     fun moveVideoClip(clipId: String, deltaMs: Long) {
         if (deltaMs == 0L) return
+        val snap = _snapshot.value
+        val clipTarget = snap.clips.firstOrNull { it.id == clipId } ?: return
+        if (snap.isVideoTrackLocked(clipTarget.trackIndex)) return
         mutate(pushHistory = false) { s ->
             s.copy(
                 clips = s.clips.map { clip ->
@@ -628,7 +790,7 @@ class StudioViewModel(
     }
 
     fun moveTextTrack(textId: String, deltaMs: Long) {
-        if (deltaMs == 0L) return
+        if (deltaMs == 0L || _snapshot.value.isTextTrackLocked()) return
         mutate(pushHistory = false) { s ->
             s.copy(
                 textTracks = s.textTracks.map { tx ->
@@ -645,6 +807,8 @@ class StudioViewModel(
 
     fun moveAudioTrack(audioId: String, deltaMs: Long) {
         if (deltaMs == 0L) return
+        val auTarget = _snapshot.value.audioTracks.firstOrNull { it.id == audioId } ?: return
+        if (_snapshot.value.isAudioTrackLocked(auTarget.trackIndex)) return
         mutate(pushHistory = false) { s ->
             s.copy(
                 audioTracks = s.audioTracks.map { au ->
@@ -660,6 +824,9 @@ class StudioViewModel(
     }
 
     fun trimClipEdge(clipId: String, isStart: Boolean, deltaTimelineMs: Long) {
+        val snap = _snapshot.value
+        val targetClip = snap.clips.firstOrNull { it.id == clipId } ?: return
+        if (snap.isVideoTrackLocked(targetClip.trackIndex)) return
         mutate(pushHistory = false) { s ->
             val next = s.clips.map { clip ->
                 if (clip.id != clipId) clip
@@ -717,6 +884,7 @@ class StudioViewModel(
     }
 
     fun trimTextEdge(textId: String, isStart: Boolean, deltaMs: Long) {
+        if (_snapshot.value.isTextTrackLocked()) return
         val baseMax = totalTimelineDurationMs().coerceAtLeast(1_000L)
         mutate(pushHistory = false) { s ->
             s.copy(
@@ -734,6 +902,8 @@ class StudioViewModel(
     }
 
     fun trimAudioEdge(audioId: String, isStart: Boolean, deltaMs: Long) {
+        val auTarget = _snapshot.value.audioTracks.firstOrNull { it.id == audioId } ?: return
+        if (_snapshot.value.isAudioTrackLocked(auTarget.trackIndex)) return
         val baseMax = totalTimelineDurationMs().coerceAtLeast(1_000L)
         mutate(pushHistory = false) { s ->
             s.copy(
@@ -757,6 +927,10 @@ class StudioViewModel(
 
     fun duplicateSelectedClip() {
         val clip = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(clip.trackIndex)) {
+            _statusMessage.value = "V${clip.trackIndex + 1} is locked."
+            return
+        }
         val copyId = UUID.randomUUID().toString()
         val insertAt = clip.timelineStartMs + clip.timelineDurationMs()
         val clone = clip.copy(id = copyId, timelineStartMs = insertAt)
@@ -768,7 +942,7 @@ class StudioViewModel(
                 if (c.id == clip.id) {
                     result.add(c)
                     result.add(clone)
-                } else if (c.timelineStartMs >= insertAt - 20L) {
+                } else if (c.trackIndex == clip.trackIndex && c.timelineStartMs >= insertAt - 20L) {
                     result.add(c.copy(timelineStartMs = c.timelineStartMs + shift))
                 } else {
                     result.add(c)
@@ -780,8 +954,15 @@ class StudioViewModel(
     }
 
     fun deleteSelectedClip() {
-        val id = _selectedClipId.value ?: activeClipAtPlayhead().id
-        val currentClips = _snapshot.value.clips
+        val snap = _snapshot.value
+        val targetClip = _selectedClipId.value?.let { id -> snap.clips.firstOrNull { it.id == id } }
+            ?: activeClipAtPlayhead()
+        val id = targetClip.id
+        if (snap.isVideoTrackLocked(targetClip.trackIndex)) {
+            _statusMessage.value = "V${targetClip.trackIndex + 1} is locked."
+            return
+        }
+        val currentClips = snap.clips
         val hasImportedClips = currentClips.any { !it.sourceUriString.isNullOrBlank() }
         if (currentClips.isEmpty() || !hasImportedClips) {
             _statusMessage.value = "No video clip to delete."
@@ -803,16 +984,23 @@ class StudioViewModel(
             return
         }
         mutate { s ->
-            val remaining = s.clips.filterNot { it.id == id }.sortedBy { it.timelineStartMs }
-            // Keep timeline contiguous with 0 gap after deleting intermediate/start clips
-            var cursor = 0L
-            val compacted = remaining.map { c ->
-                val updated = c.copy(timelineStartMs = cursor)
-                cursor += updated.timelineDurationMs()
-                updated
+            val remaining = s.clips.filterNot { it.id == id }
+            val updated = if (targetClip.trackIndex == 0) {
+                var cursor = 0L
+                val v1Compacted = remaining.filter { it.trackIndex == 0 }
+                    .sortedBy { it.timelineStartMs }
+                    .map { c ->
+                        val u = c.copy(timelineStartMs = cursor)
+                        cursor += u.timelineDurationMs()
+                        u
+                    }
+                val otherTracks = remaining.filter { it.trackIndex != 0 }
+                (v1Compacted + otherTracks).sortedWith(compareBy({ it.trackIndex }, { it.timelineStartMs }))
+            } else {
+                remaining
             }
             s.copy(
-                clips = compacted,
+                clips = updated,
                 transitions = s.transitions.filterNot { it.afterClipId == id },
             )
         }
@@ -823,11 +1011,16 @@ class StudioViewModel(
     }
 
     fun freezeSelectedClipAtPlayhead() {
-        val spans = clipSpans()
+        val snap = _snapshot.value
         val t = _playheadMs.value
-        val span = _selectedClipId.value?.let { id -> spans.firstOrNull { it.clip.id == id } }
-            ?: spans.firstOrNull { t in it.startMs..it.endMs } ?: return
+        val target = _selectedClipId.value?.let { id -> snap.clips.firstOrNull { it.id == id } }
+            ?: activeClipAtPlayhead()
+        val span = computeTrackSpans(snap.clips, target.trackIndex).firstOrNull { it.clip.id == target.id } ?: return
         val clip = span.clip
+        if (snap.isVideoTrackLocked(clip.trackIndex)) {
+            _statusMessage.value = "V${clip.trackIndex + 1} is locked."
+            return
+        }
         val localMs = (t - span.startMs).coerceIn(0L, clip.timelineDurationMs())
         val freezeSourceMs = clip.trimStartMs + (localMs * clip.speed.effectiveSpeedMultiplier()).toLong()
         val frozenId = UUID.randomUUID().toString()
@@ -836,6 +1029,7 @@ class StudioViewModel(
             id = frozenId,
             sourceUriString = clip.sourceUriString,
             displayName = "Freeze",
+            trackIndex = clip.trackIndex,
             timelineStartMs = insertAt,
             trimStartMs = freezeSourceMs,
             trimEndMs = freezeSourceMs + 250L,
@@ -851,7 +1045,7 @@ class StudioViewModel(
                 if (c.id == clip.id) {
                     result.add(c)
                     result.add(frozenClip)
-                } else if (c.timelineStartMs >= insertAt - 20L) {
+                } else if (c.trackIndex == clip.trackIndex && c.timelineStartMs >= insertAt - 20L) {
                     result.add(c.copy(timelineStartMs = c.timelineStartMs + 3_000L))
                 } else {
                     result.add(c)
@@ -865,6 +1059,10 @@ class StudioViewModel(
 
     fun toggleReverseSelectedClip(context: Context, reverseAudio: Boolean = true) {
         val target = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) {
+            _statusMessage.value = "V${target.trackIndex + 1} is locked."
+            return
+        }
         if (target.isReversed) {
             mutateClip(target.id) { it.copy(isReversed = false, cutFlashPunchOnStart = false) }
             _statusMessage.value = "Restored original forward playback"
@@ -886,8 +1084,11 @@ class StudioViewModel(
         isBatchReverseAll: Boolean,
         reverseAudio: Boolean,
     ) {
-        val allClips = _snapshot.value.clips.sortedBy { it.timelineStartMs }
-        val targets = allClips.filter { it.id in clipIds && !it.sourceUriString.isNullOrBlank() }
+        val snap = _snapshot.value
+        val allClips = snap.clips.sortedBy { it.timelineStartMs }
+        val targets = allClips.filter {
+            it.id in clipIds && !it.sourceUriString.isNullOrBlank() && !snap.isVideoTrackLocked(it.trackIndex)
+        }
         if (targets.isEmpty()) {
             _statusMessage.value = "Import a video clip before reversing."
             return
@@ -926,6 +1127,7 @@ class StudioViewModel(
                             reverseAudio = reverseAudio,
                             targetWidth = clip.width,
                             targetHeight = clip.height,
+                            minFrameGapUs = if (clip.baseDurationMs() <= 800L) 16_000L else 30_000L,
                             onProgress = { pct, label ->
                                 _reverseProgress.value = ReverseProgressState(
                                     currentClipIndex = idx + 1,
@@ -974,6 +1176,226 @@ class StudioViewModel(
                 } else {
                     "Reversed ${updatedClipsMap.size} clip(s) frame-by-frame."
                 }
+            }
+        }
+    }
+
+    fun applySmoothAutoReverse(
+        context: Context,
+        customConfig: SmoothReverseConfig? = null,
+    ) {
+        val target = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) {
+            _statusMessage.value = "V${target.trackIndex + 1} is locked."
+            return
+        }
+        val srcUriStr = target.sourceUriString
+        val srcUri = srcUriStr?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        if (srcUri == null) {
+            _statusMessage.value = "Import a video clip before using Smooth Reverse."
+            return
+        }
+        val playheadLocal = (_playheadMs.value - target.timelineStartMs).coerceIn(0L, target.timelineDurationMs())
+        val baseConfig = customConfig ?: SmoothReverseConfig(
+            originalTrimStartMs = target.trimStartMs,
+            originalTrimEndMs = target.trimEndMs,
+        )
+        val trimWindow = selectBestSmoothReverseWindow(
+            clip = target,
+            preferredLengthMs = if (customConfig != null) customConfig.segmentDurationMs else null,
+            playheadLocalMs = playheadLocal,
+        )
+        val finalConfig = baseConfig.copy(
+            segmentDurationMs = (trimWindow.second - trimWindow.first).coerceAtLeast(200L),
+            originalTrimStartMs = target.trimStartMs,
+            originalTrimEndMs = target.trimEndMs,
+        )
+
+        viewModelScope.launch {
+            val reversedClipId = UUID.randomUUID().toString()
+            val groupId = UUID.randomUUID().toString()
+            _reverseProgress.value = ReverseProgressState(
+                currentClipIndex = 1,
+                totalClips = 1,
+                clipName = "${target.displayName} • Smooth Reverse",
+                percent = 0,
+                statusLabel = "Auto-trimming & reversing frames...",
+            )
+            val revRes = VideoReverseProcessor.generateReversedClipMp4(
+                context = context,
+                sourceUri = srcUri,
+                clipId = reversedClipId,
+                trimStartMs = trimWindow.first,
+                trimEndMs = trimWindow.second,
+                reverseAudio = true,
+                targetWidth = target.width,
+                targetHeight = target.height,
+                minFrameGapUs = 14_000L,
+                onProgress = { pct, label ->
+                    _reverseProgress.value = ReverseProgressState(
+                        currentClipIndex = 1,
+                        totalClips = 1,
+                        clipName = "${target.displayName} • Smooth Reverse",
+                        percent = pct,
+                        statusLabel = label,
+                    )
+                },
+            )
+            _reverseProgress.value = null
+
+            revRes.onSuccess { out ->
+                val (clip1, clip2) = buildSmoothReversePair(
+                    sourceClip = target,
+                    reversedUriString = out.reversedUri.toString(),
+                    reversedClipId = reversedClipId,
+                    groupId = groupId,
+                    config = finalConfig,
+                    trimWindow = trimWindow,
+                )
+                mutate(pushHistory = true) { s ->
+                    val sorted = s.clips.sortedBy { it.timelineStartMs }
+                    val newClips = mutableListOf<VideoClipSegment>()
+                    var prevEndOnTrack = 0L
+                    var inserted = false
+                    val targetTrack = target.trackIndex
+                    sorted.forEach { c ->
+                        if (c.trackIndex != targetTrack) {
+                            newClips.add(c)
+                        } else if (c.id == target.id) {
+                            val c1 = clip1.copy(timelineStartMs = maxOf(prevEndOnTrack, target.timelineStartMs))
+                            val c2 = clip2.copy(timelineStartMs = c1.timelineStartMs + c1.timelineDurationMs())
+                            newClips.add(c1)
+                            newClips.add(c2)
+                            prevEndOnTrack = c2.timelineStartMs + c2.timelineDurationMs()
+                            inserted = true
+                        } else if (inserted) {
+                            val shifted = c.copy(timelineStartMs = maxOf(prevEndOnTrack, c.timelineStartMs + (clip1.timelineDurationMs() + clip2.timelineDurationMs() - target.timelineDurationMs())))
+                            newClips.add(shifted)
+                            prevEndOnTrack = shifted.timelineStartMs + shifted.timelineDurationMs()
+                        } else {
+                            newClips.add(c)
+                            prevEndOnTrack = maxOf(prevEndOnTrack, c.timelineStartMs + c.timelineDurationMs())
+                        }
+                    }
+                    s.copy(clips = newClips)
+                }
+                refreshClipThumbnailsAsync(context, clip1)
+                refreshClipThumbnailsAsync(context, clip2)
+                _selectedClipId.value = clip1.id
+                _playheadMs.value = clip1.timelineStartMs
+                saveProjectImmediately()
+                _statusMessage.value = "Applied Smooth Auto-Reverse (10x → 0.1x ⇄ 0.1x → 10x)"
+            }.onFailure { err ->
+                _statusMessage.value = "Smooth Reverse failed: ${err.localizedMessage}"
+            }
+        }
+    }
+
+    fun updateSmoothReverseConfig(
+        context: Context,
+        groupId: String,
+        newConfig: SmoothReverseConfig,
+        commitHistory: Boolean = false,
+    ) {
+        val groupClips = _snapshot.value.clips
+            .filter { it.smoothReverseGroupId == groupId }
+            .sortedBy { it.timelineStartMs }
+        val orig = groupClips.firstOrNull { it.smoothReverseRole == SmoothReverseRole.ORIGINAL } ?: return
+        val rev = groupClips.firstOrNull { it.smoothReverseRole == SmoothReverseRole.REVERSED } ?: return
+        val oldSegLen = orig.baseDurationMs()
+        val maxSpan = (orig.sourceDurationMs - orig.trimStartMs).coerceAtLeast(200L)
+        val newSegLen = newConfig.segmentDurationMs.coerceIn(200L, minOf(2_000L, maxSpan))
+        val newTrimEnd = (orig.trimStartMs + newSegLen).coerceAtMost(orig.sourceDurationMs)
+        val trimChanged = abs(newTrimEnd - orig.trimEndMs) >= 20L
+
+        if (!trimChanged) {
+            val (u1, u2) = buildSmoothReversePair(
+                sourceClip = orig,
+                reversedUriString = rev.reversedUriString,
+                reversedClipId = rev.id,
+                groupId = groupId,
+                config = newConfig.copy(segmentDurationMs = orig.baseDurationMs()),
+                trimWindow = orig.trimStartMs to orig.trimEndMs,
+            )
+            mutate(pushHistory = commitHistory) { s ->
+                val sorted = s.clips.sortedBy { it.timelineStartMs }
+                val oldGroupEnd = rev.timelineStartMs + rev.timelineDurationMs()
+                val newGroupEnd = u2.timelineStartMs + u2.timelineDurationMs()
+                val tailDelta = newGroupEnd - oldGroupEnd
+                s.copy(
+                    clips = sorted.map { c ->
+                        when (c.id) {
+                            orig.id -> u1
+                            rev.id -> u2
+                            else -> if (c.trackIndex == orig.trackIndex && c.timelineStartMs >= oldGroupEnd - 25L) {
+                                c.copy(timelineStartMs = maxOf(newGroupEnd, c.timelineStartMs + tailDelta))
+                            } else c
+                        }
+                    }
+                )
+            }
+            return
+        }
+
+        val srcUri = orig.sourceUriString?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: return
+        viewModelScope.launch {
+            _reverseProgress.value = ReverseProgressState(
+                currentClipIndex = 1,
+                totalClips = 1,
+                clipName = "${orig.displayName} • Adjust Length",
+                percent = 0,
+                statusLabel = "Updating Smooth Reverse segment...",
+            )
+            val revRes = VideoReverseProcessor.generateReversedClipMp4(
+                context = context,
+                sourceUri = srcUri,
+                clipId = rev.id,
+                trimStartMs = orig.trimStartMs,
+                trimEndMs = newTrimEnd,
+                reverseAudio = rev.reverseAudio,
+                targetWidth = orig.width,
+                targetHeight = orig.height,
+                minFrameGapUs = 14_000L,
+                onProgress = { pct, label ->
+                    _reverseProgress.value = ReverseProgressState(
+                        currentClipIndex = 1,
+                        totalClips = 1,
+                        clipName = "${orig.displayName} • Adjust Length",
+                        percent = pct,
+                        statusLabel = label,
+                    )
+                },
+            )
+            _reverseProgress.value = null
+            revRes.onSuccess { out ->
+                val (u1, u2) = buildSmoothReversePair(
+                    sourceClip = orig,
+                    reversedUriString = out.reversedUri.toString(),
+                    reversedClipId = rev.id,
+                    groupId = groupId,
+                    config = newConfig.copy(segmentDurationMs = newTrimEnd - orig.trimStartMs),
+                    trimWindow = orig.trimStartMs to newTrimEnd,
+                )
+                mutate(pushHistory = true) { s ->
+                    val sorted = s.clips.sortedBy { it.timelineStartMs }
+                    val oldGroupEnd = rev.timelineStartMs + rev.timelineDurationMs()
+                    val newGroupEnd = u2.timelineStartMs + u2.timelineDurationMs()
+                    val tailDelta = newGroupEnd - oldGroupEnd
+                    s.copy(
+                        clips = sorted.map { c ->
+                            when (c.id) {
+                                orig.id -> u1
+                                rev.id -> u2
+                                else -> if (c.timelineStartMs >= oldGroupEnd - 25L) {
+                                    c.copy(timelineStartMs = maxOf(newGroupEnd, c.timelineStartMs + tailDelta))
+                                } else c
+                            }
+                        }
+                    )
+                }
+                refreshClipThumbnailsAsync(context, u1)
+                refreshClipThumbnailsAsync(context, u2)
+                saveProjectImmediately()
             }
         }
     }
@@ -1128,6 +1550,7 @@ class StudioViewModel(
     fun updateSelectedClipOpacity(opacity: Float) {
         val clamped = opacity.coerceIn(0f, 1f)
         val target = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) return
         val local = localPlayheadMs(target.id)
         mutate(pushHistory = false) { s ->
             s.copy(
@@ -1157,6 +1580,7 @@ class StudioViewModel(
 
     fun updateSelectedClipTransform(transform: TransformSettings, pushHistory: Boolean = false) {
         val target = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) return
         val local = localPlayheadMs(target.id)
         mutate(pushHistory = pushHistory) { s ->
             s.copy(
@@ -1261,7 +1685,7 @@ class StudioViewModel(
         val nextZoom = (cur.zoomPercent * zoomScaleFactor).coerceIn(100f, 360f)
         val nextPosX = (cur.posX + panDeltaX).coerceIn(-1.5f, 1.5f)
         val nextPosY = (cur.posY + panDeltaY).coerceIn(-1.5f, 1.5f)
-        val nextRot = ((cur.rotateDeg + rotationDeltaDeg) % 360f + 360f) % 360f
+        val nextRot = if (abs(rotationDeltaDeg) < 0.0001f) cur.rotateDeg else (cur.rotateDeg + rotationDeltaDeg)
         updateSelectedClipTransform(
             cur.copy(
                 posX = nextPosX,
@@ -1331,6 +1755,7 @@ class StudioViewModel(
         pushHistory: Boolean = false,
     ) {
         val textId = _selectedTextId.value ?: return
+        if (_snapshot.value.isTextTrackLocked()) return
         val scale = (zoomPercent / 100f).coerceIn(0.35f, 3.5f)
         val clampedOp = opacity.coerceIn(0f, 1f)
         mutate(pushHistory = pushHistory) { s ->
@@ -1663,6 +2088,42 @@ class StudioViewModel(
         if (_selectedEffectId.value == id) _selectedEffectId.value = null
     }
 
+    fun enableTimesliceOnSelectedClip() {
+        val target = activeClipAtPlayhead()
+        if (!target.timeslice.enabled) {
+            mutateClip(target.id) { c ->
+                c.copy(
+                    timeslice = c.timeslice.copy(
+                        enabled = true,
+                        previewEnabled = true,
+                    )
+                )
+            }
+            _statusMessage.value = "Timeslice enabled on ${target.displayName}"
+        }
+    }
+
+    fun updateSelectedClipTimeslice(settings: TimesliceSettings, commitHistory: Boolean = false) {
+        val target = activeClipAtPlayhead()
+        mutate(pushHistory = commitHistory) { s ->
+            s.copy(
+                clips = s.clips.map { c ->
+                    if (c.id == target.id) c.copy(timeslice = settings) else c
+                }
+            )
+        }
+    }
+
+    fun removeSelectedClipTimeslice() {
+        val target = activeClipAtPlayhead()
+        if (target.timeslice.enabled) {
+            mutateClip(target.id) { c ->
+                c.copy(timeslice = TimesliceSettings())
+            }
+            _statusMessage.value = "Removed Timeslice from ${target.displayName}"
+        }
+    }
+
     fun updateTransition(afterClipId: String, type: TransitionType, durationSec: Float, applyToAll: Boolean) {
         val safeDur = durationSec.coerceIn(0.1f, 0.8f)
         mutate { s ->
@@ -1677,7 +2138,9 @@ class StudioViewModel(
     }
 
     fun updateAdjust(adjust: AdjustSettings) {
-        val targetId = activeClipAtPlayhead().id
+        val target = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) return
+        val targetId = target.id
         mutate(pushHistory = false) { s ->
             s.copy(
                 clips = s.clips.map { if (it.id == targetId) it.copy(adjust = adjust) else it }
@@ -1745,6 +2208,12 @@ class StudioViewModel(
                 isMuted = false,
                 animation = AnimationSettings(),
                 mask = MaskSettings(),
+                smoothReverseRole = SmoothReverseRole.NONE,
+                smoothReverseGroupId = null,
+                smoothReverseConfig = null,
+                timeslice = TimesliceSettings(),
+                keyframes = emptyList(),
+                volumeKeyframes = emptyList(),
             )
         }
         _statusMessage.value = "Reset selected clip settings"
@@ -1813,12 +2282,18 @@ class StudioViewModel(
         selectOverlay(second.id)
     }
 
-    fun addAudioTrack(context: Context, uri: Uri?, fallbackTitle: String = "Audio Track") {
+    fun addAudioTrack(context: Context, uri: Uri?, fallbackTitle: String = "Audio Track", targetTrackIndex: Int = 0) {
         viewModelScope.launch {
             val name = uri?.let { VideoExportManager.queryDisplayName(context, it) } ?: fallbackTitle
             val start = _playheadMs.value
             val end = totalTimelineDurationMs()
-            val track = AudioTrackItem(uriString = uri?.toString(), title = name, startMs = start, endMs = end)
+            val track = AudioTrackItem(
+                uriString = uri?.toString(),
+                title = name,
+                trackIndex = targetTrackIndex.coerceIn(0, 1),
+                startMs = start,
+                endMs = end,
+            )
             mutate { s -> s.copy(audioTracks = s.audioTracks + track) }
             selectAudioTrack(track.id)
         }
@@ -1924,6 +2399,10 @@ class StudioViewModel(
 
     fun splitAudioAtPlayhead(id: String) {
         val au = _snapshot.value.audioTracks.firstOrNull { it.id == id } ?: return
+        if (_snapshot.value.isAudioTrackLocked(au.trackIndex)) {
+            _statusMessage.value = "A${au.trackIndex + 1} is locked."
+            return
+        }
         val t = _playheadMs.value
         if (t <= au.startMs + 250L || t >= au.endMs - 250L) {
             _statusMessage.value = "Move playhead inside audio to split."
@@ -1947,6 +2426,11 @@ class StudioViewModel(
     }
 
     fun deleteAudioTrack(id: String) {
+        val au = _snapshot.value.audioTracks.firstOrNull { it.id == id }
+        if (au != null && _snapshot.value.isAudioTrackLocked(au.trackIndex)) {
+            _statusMessage.value = "A${au.trackIndex + 1} is locked."
+            return
+        }
         mutate { s -> s.copy(audioTracks = s.audioTracks.filterNot { it.id == id }) }
         if (_selectedAudioId.value == id) _selectedAudioId.value = null
     }
@@ -1968,6 +2452,10 @@ class StudioViewModel(
     }
 
     fun splitTextAtPlayhead(id: String) {
+        if (_snapshot.value.isTextTrackLocked()) {
+            _statusMessage.value = "TEXT track is locked."
+            return
+        }
         val tx = _snapshot.value.textTracks.firstOrNull { it.id == id } ?: return
         val t = _playheadMs.value
         if (t <= tx.startMs + 250L || t >= tx.endMs - 250L) {
@@ -2002,6 +2490,10 @@ class StudioViewModel(
     }
 
     fun deleteTextTrack(id: String) {
+        if (_snapshot.value.isTextTrackLocked()) {
+            _statusMessage.value = "TEXT track is locked."
+            return
+        }
         mutate { s -> s.copy(textTracks = s.textTracks.filterNot { it.id == id }) }
         if (_selectedTextId.value == id) _selectedTextId.value = null
     }
@@ -2101,17 +2593,12 @@ class StudioViewModel(
             return
         }
         val snap = _snapshot.value
-        _exportState.value = ExportUiState.Rendering(0, "Preparing Media3 Composition (${config.resolution.shortLabel} @ ${config.frameRate}fps)...")
+        _exportState.value = ExportUiState.Rendering(0, "Preparing Multi-Track Composition (${config.resolution.shortLabel} @ ${config.frameRate}fps)...")
         exportManager.startCapCutExport(
             sourceVideoUri = video.uri,
-            clips = snap.clips,
-            transitions = snap.transitions,
-            effectLayers = snap.effectLayers,
-            overlays = snap.overlays,
-            texts = snap.textTracks,
-            adjust = snap.adjust,
-            activePreset = snap.activePreset,
-            filterIntensity = snap.filterIntensity,
+            snapshot = snap,
+            aspectPreset = _aspectPreset.value,
+            canvasFitMode = _canvasFitMode.value,
             config = config,
             onProgress = { pct ->
                 _exportState.value = ExportUiState.Rendering(pct, "Exporting ${config.resolution.shortLabel} • ${config.frameRate}fps...")
@@ -2149,6 +2636,11 @@ class StudioViewModel(
     }
 
     private fun mutateClip(clipId: String, updater: (VideoClipSegment) -> VideoClipSegment) {
+        val target = _snapshot.value.clips.firstOrNull { it.id == clipId }
+        if (target != null && _snapshot.value.isVideoTrackLocked(target.trackIndex)) {
+            _statusMessage.value = "V${target.trackIndex + 1} is locked."
+            return
+        }
         mutate { s ->
             s.copy(clips = s.clips.map { if (it.id == clipId) updater(it) else it })
         }
@@ -2215,6 +2707,169 @@ class StudioViewModel(
         fun shouldApplyShortReverseCutEffect(clip: VideoClipSegment, isBatchReverseAll: Boolean): Boolean {
             val dur = clip.timelineDurationMs()
             return isBatchReverseAll && dur in 450L..1_050L
+        }
+
+        /**
+         * Step 1 — Auto Trim:
+         * If selected clip > 500ms, auto-trim to best 0.2s–0.5s segment (default 400ms),
+         * prioritizing beat marker -> playhead -> energetic 35% anchor. Preserves <= 500ms clips.
+         */
+        fun selectBestSmoothReverseWindow(
+            clip: VideoClipSegment,
+            preferredLengthMs: Long? = null,
+            playheadLocalMs: Long? = null,
+        ): Pair<Long, Long> {
+            val trimStart = clip.trimStartMs.coerceAtLeast(0L)
+            val trimEnd = clip.trimEndMs.coerceAtLeast(trimStart + 200L)
+            val span = trimEnd - trimStart
+            val targetLen = when {
+                preferredLengthMs != null -> preferredLengthMs.coerceIn(200L, span)
+                span <= 500L -> return trimStart to trimEnd
+                else -> 400L.coerceIn(200L, 500L)
+            }
+            val spd = clip.speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
+            val anchorSourceMs = when {
+                clip.beatMarkersMs.isNotEmpty() -> {
+                    val nearestBeat = if (playheadLocalMs != null) {
+                        clip.beatMarkersMs.minByOrNull { abs(it - playheadLocalMs) } ?: clip.beatMarkersMs.first()
+                    } else {
+                        clip.beatMarkersMs.first()
+                    }
+                    // End the forward clip right on the beat so the reversed return bounces off the beat
+                    (trimStart + (nearestBeat * spd).toLong() - targetLen)
+                }
+                playheadLocalMs != null && playheadLocalMs > 0L -> {
+                    trimStart + (playheadLocalMs * spd).toLong()
+                }
+                else -> {
+                    trimStart + (span * 0.35f).toLong()
+                }
+            }
+            val winStart = anchorSourceMs.coerceIn(trimStart, (trimEnd - targetLen).coerceAtLeast(trimStart))
+            val winEnd = (winStart + targetLen).coerceAtMost(trimEnd)
+            return winStart to winEnd
+        }
+
+        /**
+         * Steps 2–5 — Builds [Original Smooth] + [Reversed Smooth] pair with mirrored 2-point
+         * bezier speed ramp (10.0x->0.1x & 0.1x->10.0x), Smooth Slow-Mo Better Quality,
+         * non-rotating Zoom+Y keyframes (CUBIC_OUT -> CUBIC_IN), and zero gap/overlap.
+         */
+        fun buildSmoothReversePair(
+            sourceClip: VideoClipSegment,
+            reversedUriString: String?,
+            reversedClipId: String,
+            groupId: String,
+            config: SmoothReverseConfig = SmoothReverseConfig(),
+            trimWindow: Pair<Long, Long> = selectBestSmoothReverseWindow(sourceClip),
+        ): Pair<VideoClipSegment, VideoClipSegment> {
+            val winStart = trimWindow.first.coerceAtLeast(0L)
+            val winEnd = trimWindow.second.coerceAtLeast(winStart + 200L)
+            val startSpd = config.startSpeed.coerceIn(0.1f, 10.0f)
+            val endSpd = config.endSpeed.coerceIn(0.1f, 10.0f)
+            val zoomPct = config.zoomPercent.coerceIn(100f, 300f)
+
+            val speed1 = SpeedSettings(
+                mode = SpeedMode.CURVE,
+                smoothSlowMo = true,
+                smoothSlowMoBetterQuality = true,
+                curvePreset = CurveSpeedPreset.CUSTOM,
+                curvePoints = listOf(startSpd, endSpd),
+                curveControlPoints = listOf(
+                    SpeedCurvePoint(0f, startSpd),
+                    SpeedCurvePoint(1f, endSpd),
+                ),
+                curveBezierSmooth = true,
+            )
+            val temp1 = sourceClip.copy(
+                trimStartMs = winStart,
+                trimEndMs = winEnd,
+                isReversed = false,
+                reversedUriString = null,
+                speed = speed1,
+            )
+            val dur1 = temp1.timelineDurationMs()
+            val clip1Kfs = listOf(
+                KeyframeNode(
+                    id = UUID.randomUUID().toString(),
+                    timeMs = 0L,
+                    easingToNext = EasingGraph.CUBIC_OUT,
+                    posX = 0f,   // Center X = 50
+                    posY = 0f,   // Center Y = 50
+                    zoomPercent = 100f,
+                    rotateDeg = 0f,
+                ),
+                KeyframeNode(
+                    id = UUID.randomUUID().toString(),
+                    timeMs = dur1,
+                    easingToNext = EasingGraph.LINEAR,
+                    posX = 0f,    // X = 50
+                    posY = 0.20f, // Y = 70 (+0.20 normalized)
+                    zoomPercent = zoomPct,
+                    rotateDeg = 0f,
+                ),
+            )
+            val clip1 = temp1.copy(
+                displayName = "${sourceClip.displayName} (Smooth)",
+                cutFlashPunchOnStart = false,
+                smoothReverseRole = SmoothReverseRole.ORIGINAL,
+                smoothReverseGroupId = groupId,
+                smoothReverseConfig = config.copy(segmentDurationMs = winEnd - winStart),
+                transform = sourceClip.transform.copy(
+                    posX = 0f,
+                    posY = 0f,
+                    zoomPercent = 100f,
+                    rotateDeg = 0f,
+                ),
+                keyframes = clip1Kfs,
+            )
+
+            val speed2 = speed1.mirrored() // 0.1X -> 10.0X seamless mirror
+            val clip2Start = clip1.timelineStartMs + dur1
+            val temp2 = sourceClip.copy(
+                id = reversedClipId,
+                displayName = "${sourceClip.displayName} (Rev Smooth)",
+                timelineStartMs = clip2Start,
+                trimStartMs = winStart,
+                trimEndMs = winEnd,
+                isReversed = true,
+                reversedUriString = reversedUriString,
+                reverseAudio = true,
+                cutFlashPunchOnStart = false,
+                smoothReverseRole = SmoothReverseRole.REVERSED,
+                smoothReverseGroupId = groupId,
+                smoothReverseConfig = config.copy(segmentDurationMs = winEnd - winStart),
+                speed = speed2,
+                transform = sourceClip.transform.copy(
+                    posX = 0f,
+                    posY = 0f,
+                    zoomPercent = 100f,
+                    rotateDeg = 0f,
+                ),
+            )
+            val dur2 = temp2.timelineDurationMs()
+            val clip2Kfs = listOf(
+                KeyframeNode(
+                    id = UUID.randomUUID().toString(),
+                    timeMs = 0L,
+                    easingToNext = EasingGraph.CUBIC_IN,
+                    posX = 0f,
+                    posY = 0.20f,
+                    zoomPercent = zoomPct,
+                    rotateDeg = 0f,
+                ),
+                KeyframeNode(
+                    id = UUID.randomUUID().toString(),
+                    timeMs = dur2,
+                    easingToNext = EasingGraph.LINEAR,
+                    posX = 0f,
+                    posY = 0f,
+                    zoomPercent = 100f,
+                    rotateDeg = 0f,
+                ),
+            )
+            val clip2 = temp2.copy(keyframes = clip2Kfs)
+            return clip1 to clip2
         }
     }
 }

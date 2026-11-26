@@ -32,6 +32,7 @@ import com.example.data.model.AdjustSettings
 import com.example.data.model.ClipTimelineSpan
 import com.example.data.model.FfxPreset
 import com.example.data.model.KeyframeEvaluator
+import com.example.data.model.MotionBlurSettings
 import com.example.data.model.OverlayTrackItem
 import com.example.data.model.StabilizeMode
 import com.example.data.model.TextKeyframeEvaluator
@@ -159,7 +160,7 @@ object VideoEffectsEngine {
         filterIntensity: Float,
         config: ExportConfig,
     ): Effects {
-        val spans = computeClipSpans(allClips)
+        val spans = com.example.data.model.computeTrackSpans(allClips, clip.trackIndex)
         val transitionWindows = buildTransitionWindows(spans, transitions)
         val clipDuration = clip.timelineDurationMs()
 
@@ -212,7 +213,11 @@ object VideoEffectsEngine {
             includeClipTransformInGl = true,
             includeOverlaysAndTexts = true,
             targetHeight = config.resolution.targetHeight,
-            targetFps = config.frameRate,
+            targetFps = if (clip.speed.smoothSlowMo && clip.speed.smoothSlowMoBetterQuality) {
+                maxOf(config.frameRate, 60)
+            } else {
+                config.frameRate
+            },
         )
 
         val audioProcessors = mutableListOf<AudioProcessor>()
@@ -249,6 +254,15 @@ object VideoEffectsEngine {
         timelineOffsetMs: Long = 0L,
     ): LunaShaderParams {
         val fi = filterIntensity.coerceIn(0f, 1f)
+        val effectiveMotionBlur = if (
+            clip.speed.smoothSlowMo &&
+            clip.speed.smoothSlowMoBetterQuality &&
+            !clip.motionBlur.enabled
+        ) {
+            MotionBlurSettings(enabled = true, blurAmount = 0.20f, blendAmount = 0.35f)
+        } else {
+            clip.motionBlur
+        }
         return LunaShaderParams(
             bypass = bypass,
             adjust = adjust,
@@ -269,7 +283,7 @@ object VideoEffectsEngine {
             maskFeather = clip.mask.feather,
             maskInvert = clip.mask.invert,
             maskScale = clip.mask.sizeScale,
-            motionBlur = clip.motionBlur,
+            motionBlur = effectiveMotionBlur,
             clipDurationMs = clip.timelineDurationMs(),
             animation = clip.animation,
             transitions = transitionWindows,

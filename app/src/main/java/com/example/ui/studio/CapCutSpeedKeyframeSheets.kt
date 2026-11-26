@@ -5,6 +5,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.RotateRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -31,6 +34,7 @@ import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.MovieFilter
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -55,6 +59,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +70,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -79,6 +85,8 @@ import com.example.data.model.MaskShape
 import com.example.data.model.MaskSettings
 import com.example.data.model.MotionBlurDirection
 import com.example.data.model.MotionBlurSettings
+import com.example.data.model.SmoothReverseConfig
+import com.example.data.model.SpeedCurvePoint
 import com.example.data.model.SpeedMode
 import com.example.data.model.SpeedSettings
 import com.example.data.model.StabilizeMode
@@ -258,8 +266,28 @@ fun SpeedToolSheet(
             }
 
             SpeedMode.CURVE -> {
-                var selectedIdx by remember { mutableIntStateOf(0) }
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+                val ctrl = speed.resolvedCurveControlPoints()
+                var selectedIdx by remember(ctrl.size) { mutableIntStateOf(0) }
+                val safeSelIdx = selectedIdx.coerceIn(0, (ctrl.size - 1).coerceAtLeast(0))
+                val latestCtrl by rememberUpdatedState(ctrl)
+                val latestSpeed by rememberUpdatedState(speed)
+
+                fun speedToNormY(spd: Float): Float =
+                    ((ln(spd.coerceIn(0.1f, 10f).toDouble()) - ln(0.1)) / (ln(10.0) - ln(0.1))).toFloat().coerceIn(0f, 1f)
+
+                fun normYToSpeed(norm: Float): Float {
+                    val raw = (0.1 * (100.0).pow(norm.coerceIn(0f, 1f).toDouble())).toFloat().coerceIn(0.1f, 10f)
+                    return (raw * 10f).roundToInt() / 10f
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(262.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -270,7 +298,17 @@ fun SpeedToolSheet(
                             FilterChip(
                                 selected = speed.curvePreset == preset,
                                 onClick = {
-                                    onUpdateSpeed(speed.copy(curvePreset = preset, curvePoints = preset.points))
+                                    val pts = preset.points
+                                    val cPts = pts.mapIndexed { idx, v ->
+                                        SpeedCurvePoint(idx / (pts.size - 1f).coerceAtLeast(1f), v)
+                                    }
+                                    onUpdateSpeed(
+                                        speed.copy(
+                                            curvePreset = preset,
+                                            curvePoints = pts,
+                                            curveControlPoints = cPts,
+                                        )
+                                    )
                                 },
                                 label = { Text(preset.label, style = MaterialTheme.typography.labelSmall) },
                                 colors = FilterChipDefaults.filterChipColors(
@@ -280,57 +318,242 @@ fun SpeedToolSheet(
                             )
                         }
                     }
-                    // Curve Ramp Visual Canvas
-                    val pts = speed.curvePoints.ifEmpty { listOf(1f, 1f, 1f, 1f, 1f) }
+
+                    // Interactive 0.1X .. 10.0X Bezier Curve Canvas with Drag & Beat Points
                     Canvas(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(74.dp)
+                            .height(92.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(ObsidianSurfaceContainer)
-                            .padding(10.dp),
+                            .pointerInput(ctrl.size) {
+                                detectTapGestures { offset ->
+                                    val list = latestCtrl
+                                    if (list.isEmpty()) return@detectTapGestures
+                                    val padPx = 14.dp.toPx()
+                                    val drawW = (size.width - padPx * 2f).coerceAtLeast(1f)
+                                    val drawH = (size.height - padPx * 2f).coerceAtLeast(1f)
+                                    var bestIdx = 0
+                                    var bestDist = Float.MAX_VALUE
+                                    list.forEachIndexed { idx, pt ->
+                                        val px = padPx + pt.position01 * drawW
+                                        val py = padPx + (1f - speedToNormY(pt.speed)) * drawH
+                                        val d = (offset.x - px) * (offset.x - px) + (offset.y - py) * (offset.y - py)
+                                        if (d < bestDist) {
+                                            bestDist = d
+                                            bestIdx = idx
+                                        }
+                                    }
+                                    selectedIdx = bestIdx
+                                }
+                            }
+                            .pointerInput(ctrl.size) {
+                                var dragIdx = -1
+                                detectDragGestures(
+                                    onDragStart = { start ->
+                                        val list = latestCtrl
+                                        if (list.isEmpty()) return@detectDragGestures
+                                        val padPx = 14.dp.toPx()
+                                        val drawW = (size.width - padPx * 2f).coerceAtLeast(1f)
+                                        val drawH = (size.height - padPx * 2f).coerceAtLeast(1f)
+                                        var bestIdx = 0
+                                        var bestDist = Float.MAX_VALUE
+                                        list.forEachIndexed { idx, pt ->
+                                            val px = padPx + pt.position01 * drawW
+                                            val py = padPx + (1f - speedToNormY(pt.speed)) * drawH
+                                            val d = (start.x - px) * (start.x - px) + (start.y - py) * (start.y - py)
+                                            if (d < bestDist) {
+                                                bestDist = d
+                                                bestIdx = idx
+                                            }
+                                        }
+                                        dragIdx = bestIdx
+                                        selectedIdx = bestIdx
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        val list = latestCtrl.toMutableList()
+                                        if (dragIdx !in list.indices) return@detectDragGestures
+                                        val padPx = 14.dp.toPx()
+                                        val drawW = (size.width - padPx * 2f).coerceAtLeast(1f)
+                                        val drawH = (size.height - padPx * 2f).coerceAtLeast(1f)
+                                        val normY = 1f - ((change.position.y - padPx) / drawH).coerceIn(0f, 1f)
+                                        val newSpd = normYToSpeed(normY)
+                                        val curPt = list[dragIdx]
+                                        val newPos = if (dragIdx == 0) {
+                                            0f
+                                        } else if (dragIdx == list.lastIndex) {
+                                            1f
+                                        } else {
+                                            val minP = list[dragIdx - 1].position01 + 0.04f
+                                            val maxP = list[dragIdx + 1].position01 - 0.04f
+                                            ((change.position.x - padPx) / drawW).coerceIn(minP, maxP.coerceAtLeast(minP))
+                                        }
+                                        list[dragIdx] = curPt.copy(position01 = newPos, speed = newSpd)
+                                        onUpdateSpeed(
+                                            latestSpeed.copy(
+                                                curvePreset = CurveSpeedPreset.CUSTOM,
+                                                curvePoints = list.map { it.speed },
+                                                curveControlPoints = list,
+                                            )
+                                        )
+                                    },
+                                )
+                            }
+                            .testTag("speed_curve_canvas"),
                     ) {
-                        drawLine(OutlineSubtle, Offset(0f, size.height * 0.65f), Offset(size.width, size.height * 0.65f), 1.dp.toPx())
+                        val pad = 14.dp.toPx()
+                        val drawW = (size.width - pad * 2f).coerceAtLeast(1f)
+                        val drawH = (size.height - pad * 2f).coerceAtLeast(1f)
+                        val baseOneY = pad + (1f - speedToNormY(1.0f)) * drawH
+                        drawLine(OutlineSubtle, Offset(pad, baseOneY), Offset(pad + drawW, baseOneY), 1.dp.toPx())
+
                         val path = Path()
-                        val dotOffsets = pts.mapIndexed { idx, v ->
-                            val x = (idx / (pts.size - 1f).coerceAtLeast(1f)) * size.width
-                            val norm = ((v - 0.1f) / 4.9f).coerceIn(0f, 1f)
-                            val y = size.height * (1f - norm)
-                            Offset(x, y)
-                        }
-                        dotOffsets.forEachIndexed { i, o ->
-                            if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y)
+                        val steps = 40
+                        for (s in 0..steps) {
+                            val t = s / steps.toFloat()
+                            val spd = speed.speedAtProgress(t)
+                            val x = pad + t * drawW
+                            val y = pad + (1f - speedToNormY(spd)) * drawH
+                            if (s == 0) path.moveTo(x, y) else path.lineTo(x, y)
                         }
                         drawPath(path, CyberCyan, style = Stroke(2.4.dp.toPx(), cap = StrokeCap.Round))
-                        dotOffsets.forEachIndexed { i, o ->
+
+                        ctrl.forEachIndexed { i, pt ->
+                            val cx = pad + pt.position01 * drawW
+                            val cy = pad + (1f - speedToNormY(pt.speed)) * drawH
+                            val isSel = i == safeSelIdx
                             drawCircle(
-                                color = if (i == selectedIdx) LunaMint else Color.White,
-                                radius = if (i == selectedIdx) 6.dp.toPx() else 4.dp.toPx(),
-                                center = o,
+                                color = if (isSel) LunaMint else Color.White,
+                                radius = if (isSel) 6.5.dp.toPx() else 4.5.dp.toPx(),
+                                center = Offset(cx, cy),
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        pts.forEachIndexed { idx, v ->
+
+                    // Beat Point Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        ctrl.forEachIndexed { idx, pt ->
                             FilterChip(
-                                selected = selectedIdx == idx,
+                                selected = safeSelIdx == idx,
                                 onClick = { selectedIdx = idx },
-                                label = { Text("P${idx + 1} ${String.format(Locale.US, "%.1fx", v)}", style = MaterialTheme.typography.labelSmall) },
+                                label = {
+                                    Text(
+                                        "P${idx + 1} ${String.format(Locale.US, "%.1fx", pt.speed)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                },
                             )
                         }
                     }
-                    val curPtVal = pts.getOrElse(selectedIdx) { 1f }
-                    Slider(
-                        value = curPtVal.coerceIn(0.1f, 5f),
-                        onValueChange = { nv ->
-                            val updated = pts.toMutableList()
-                            updated[selectedIdx] = (nv * 10f).roundToInt() / 10f
-                            onUpdateSpeed(speed.copy(curvePreset = CurveSpeedPreset.CUSTOM, curvePoints = updated))
-                        },
-                        valueRange = 0.1f..5.0f,
-                        colors = SliderDefaults.colors(thumbColor = LunaMint, activeTrackColor = LunaMint),
-                    )
+
+                    // Actions: Add Point / Delete Point / Mirror / Smooth Bezier / Smooth Slow-Mo
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val list = ctrl.toMutableList()
+                                val insertAfter = safeSelIdx.coerceIn(0, (list.lastIndex - 1).coerceAtLeast(0))
+                                val nextIdx = (insertAfter + 1).coerceAtMost(list.lastIndex)
+                                val midPos = ((list[insertAfter].position01 + list[nextIdx].position01) * 0.5f)
+                                    .coerceIn(0.05f, 0.95f)
+                                val midSpd = speed.speedAtProgress(midPos)
+                                val updated = (list + SpeedCurvePoint(midPos, midSpd)).sortedBy { it.position01 }
+                                selectedIdx = updated.indexOfFirst { abs(it.position01 - midPos) < 0.002f }.coerceAtLeast(0)
+                                onUpdateSpeed(
+                                    speed.copy(
+                                        curvePreset = CurveSpeedPreset.CUSTOM,
+                                        curvePoints = updated.map { it.speed },
+                                        curveControlPoints = updated,
+                                    )
+                                )
+                            },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(32.dp).testTag("speed_curve_add_point"),
+                        ) {
+                            Icon(Icons.Filled.Add, null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Add Point", style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (ctrl.size > 2) {
+                            OutlinedButton(
+                                onClick = {
+                                    val removeIdx = safeSelIdx.coerceIn(1, ctrl.lastIndex - 1)
+                                    val updated = ctrl.filterIndexed { i, _ -> i != removeIdx }
+                                    selectedIdx = (removeIdx - 1).coerceAtLeast(0)
+                                    onUpdateSpeed(
+                                        speed.copy(
+                                            curvePreset = CurveSpeedPreset.CUSTOM,
+                                            curvePoints = updated.map { it.speed },
+                                            curveControlPoints = updated,
+                                        )
+                                    )
+                                },
+                                enabled = safeSelIdx in 1 until ctrl.lastIndex,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                modifier = Modifier.height(32.dp).testTag("speed_curve_delete_point"),
+                            ) {
+                                Icon(Icons.Filled.DeleteOutline, null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Delete", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        FilterChip(
+                            selected = false,
+                            onClick = { onUpdateSpeed(speed.mirrored()) },
+                            leadingIcon = { Icon(Icons.Filled.SwapHoriz, null, tint = CyberCyan, modifier = Modifier.size(15.dp)) },
+                            label = { Text("Mirror", style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.testTag("speed_curve_mirror"),
+                        )
+                        FilterChip(
+                            selected = speed.curveBezierSmooth,
+                            onClick = {
+                                onUpdateSpeed(
+                                    speed.copy(
+                                        curveBezierSmooth = !speed.curveBezierSmooth,
+                                        curveControlPoints = ctrl,
+                                    )
+                                )
+                            },
+                            label = { Text("Smooth Bezier", style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = LunaMintContainer, selectedLabelColor = LunaMint),
+                        )
+                        FilterChip(
+                            selected = speed.smoothSlowMo && speed.smoothSlowMoBetterQuality,
+                            onClick = {
+                                val next = !(speed.smoothSlowMo && speed.smoothSlowMoBetterQuality)
+                                onUpdateSpeed(speed.copy(smoothSlowMo = next, smoothSlowMoBetterQuality = next))
+                            },
+                            label = { Text("Better Quality", style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = LunaMintContainer, selectedLabelColor = LunaMint),
+                        )
+                    }
+
+                    val curPt = ctrl.getOrElse(safeSelIdx) { SpeedCurvePoint(0f, 1f) }
+                    val curSliderNorm = speedToNormY(curPt.speed)
+                    LabeledSlider(
+                        label = "Point P${safeSelIdx + 1} Speed (0.1x–10.0x)",
+                        value = curSliderNorm,
+                        range = 0f..1f,
+                        readout = String.format(Locale.US, "%.1fx", curPt.speed),
+                    ) { normVal ->
+                        val nextSpd = normYToSpeed(normVal)
+                        val updated = ctrl.toMutableList()
+                        updated[safeSelIdx] = curPt.copy(speed = nextSpd)
+                        onUpdateSpeed(
+                            speed.copy(
+                                curvePreset = CurveSpeedPreset.CUSTOM,
+                                curvePoints = updated.map { it.speed },
+                                curveControlPoints = updated,
+                            )
+                        )
+                    }
                 }
             }
 
@@ -463,6 +686,8 @@ fun TransformToolSheet(
     onClose: () -> Unit,
 ) {
     val tr = evaluatedTransform
+    val latestTr by androidx.compose.runtime.rememberUpdatedState(tr)
+    val latestOpacity by androidx.compose.runtime.rememberUpdatedState(opacity)
     val maxZoomRange = maxOf(300f, ceil(tr.zoomPercent))
     Column(
         modifier = Modifier
@@ -580,10 +805,10 @@ fun TransformToolSheet(
             }
 
             LabeledSlider("Position X", tr.posX, -1f..1f, String.format(Locale.US, "%.2f", tr.posX)) {
-                onUpdateTransform(tr.copy(posX = it), opacity)
+                onUpdateTransform(latestTr.copy(posX = it), latestOpacity)
             }
             LabeledSlider("Position Y", tr.posY, -1f..1f, String.format(Locale.US, "%.2f", tr.posY)) {
-                onUpdateTransform(tr.copy(posY = it), opacity)
+                onUpdateTransform(latestTr.copy(posY = it), latestOpacity)
             }
             LabeledSlider(
                 "Zoom",
@@ -591,14 +816,15 @@ fun TransformToolSheet(
                 100f..maxZoomRange,
                 "${tr.zoomPercent.roundToInt()}%",
             ) {
-                onUpdateTransform(tr.copy(zoomPercent = it), opacity)
+                onUpdateTransform(latestTr.copy(zoomPercent = it), latestOpacity)
             }
-            LabeledSlider("Rotate", ((tr.rotateDeg % 360f) + 360f) % 360f, 0f..360f, "${tr.rotateDeg.roundToInt()}°") {
-                onUpdateTransform(tr.copy(rotateDeg = it), opacity)
+            val normalizedRot = (((tr.rotateDeg % 360f) + 360f) % 360f).let { if (it >= 359.95f) 0f else it }
+            LabeledSlider("Rotate", normalizedRot, 0f..360f, "${normalizedRot.roundToInt()}°") {
+                onUpdateTransform(latestTr.copy(rotateDeg = if (it >= 359.95f) 0f else it), latestOpacity)
             }
             if (showOpacity) {
                 LabeledSlider("Opacity", (opacity * 100f).coerceIn(0f, 100f), 0f..100f, "${(opacity * 100f).roundToInt()}%") {
-                    onUpdateTransform(tr, (it / 100f).coerceIn(0f, 1f))
+                    onUpdateTransform(latestTr, (it / 100f).coerceIn(0f, 1f))
                 }
             }
         }
@@ -834,6 +1060,7 @@ fun ReverseClipsSheet(
     reverseProgress: ReverseProgressState?,
     onReverseSelected: (clipIds: List<String>, reverseAudio: Boolean) -> Unit,
     onReverseAll: (reverseAudio: Boolean) -> Unit,
+    onSmoothReverse: () -> Unit,
     onClose: () -> Unit,
 ) {
     val importedClips = remember(clips) {
@@ -1042,6 +1269,25 @@ fun ReverseClipsSheet(
                 }
             }
 
+            Button(
+                onClick = {
+                    onSmoothReverse()
+                    onClose()
+                },
+                enabled = reverseProgress == null && importedClips.isNotEmpty(),
+                colors = ButtonDefaults.buttonColors(containerColor = LunaMint, contentColor = ObsidianBackground),
+                modifier = Modifier.fillMaxWidth().testTag("smooth_reverse_from_sheet_button"),
+            ) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Smooth Reverse (10x → 0.1x ⇄ Reversed)",
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
             val selectedIds = importedClips.filter { checkedIds[it.id] == true }.map { it.id }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1072,4 +1318,150 @@ fun ReverseClipsSheet(
         }
     }
 }
+
+@Composable
+fun SmoothReverseSettingsSheet(
+    clip: VideoClipSegment,
+    onUpdateConfig: (groupId: String, config: SmoothReverseConfig) -> Unit,
+    onUndo: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val groupId = clip.smoothReverseGroupId
+    val initCfg = clip.smoothReverseConfig ?: SmoothReverseConfig(segmentDurationMs = clip.baseDurationMs())
+    var zoomPct by remember(clip.id, initCfg) { androidx.compose.runtime.mutableFloatStateOf(initCfg.zoomPercent) }
+    var startSpeed by remember(clip.id, initCfg) { androidx.compose.runtime.mutableFloatStateOf(initCfg.startSpeed) }
+    var endSpeed by remember(clip.id, initCfg) { androidx.compose.runtime.mutableFloatStateOf(initCfg.endSpeed) }
+    var segMs by remember(clip.id, initCfg) { androidx.compose.runtime.mutableFloatStateOf(initCfg.segmentDurationMs.toFloat()) }
+    val maxSegMs = (initCfg.originalTrimEndMs - initCfg.originalTrimStartMs).coerceIn(500L, 1_500L).toFloat()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ObsidianSurface)
+            .navigationBarsPadding()
+            .padding(bottom = 12.dp)
+            .testTag("smooth_reverse_settings_sheet"),
+    ) {
+        SheetHeader(
+            title = "Smooth Auto-Reverse",
+            subtitle = String.format(
+                Locale.US,
+                "%.1fx → %.1fx ⇄ %.0f%% Zoom • %.2fs",
+                startSpeed,
+                endSpeed,
+                zoomPct,
+                segMs / 1000f,
+            ),
+            onClose = onClose,
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            LabeledSlider(
+                label = "Zoom Target",
+                value = zoomPct.coerceIn(100f, 240f),
+                range = 100f..240f,
+                readout = "${zoomPct.roundToInt()}%",
+            ) { nextZoom ->
+                zoomPct = nextZoom.roundToInt().toFloat()
+                if (groupId != null) {
+                    onUpdateConfig(
+                        groupId,
+                        initCfg.copy(
+                            zoomPercent = zoomPct,
+                            startSpeed = startSpeed,
+                            endSpeed = endSpeed,
+                            segmentDurationMs = segMs.roundToInt().toLong(),
+                        ),
+                    )
+                }
+            }
+            LabeledSlider(
+                label = "Peak Start / Return Speed",
+                value = startSpeed.coerceIn(1f, 10f),
+                range = 1f..10f,
+                readout = String.format(Locale.US, "%.1fx", startSpeed),
+            ) { nextStart ->
+                startSpeed = (nextStart * 10f).roundToInt() / 10f
+                if (groupId != null) {
+                    onUpdateConfig(
+                        groupId,
+                        initCfg.copy(
+                            zoomPercent = zoomPct,
+                            startSpeed = startSpeed,
+                            endSpeed = endSpeed,
+                            segmentDurationMs = segMs.roundToInt().toLong(),
+                        ),
+                    )
+                }
+            }
+            LabeledSlider(
+                label = "Join Slow-Mo Speed",
+                value = endSpeed.coerceIn(0.1f, 1.0f),
+                range = 0.1f..1.0f,
+                readout = String.format(Locale.US, "%.1fx", endSpeed),
+            ) { nextEnd ->
+                endSpeed = (nextEnd * 10f).roundToInt() / 10f
+                if (groupId != null) {
+                    onUpdateConfig(
+                        groupId,
+                        initCfg.copy(
+                            zoomPercent = zoomPct,
+                            startSpeed = startSpeed,
+                            endSpeed = endSpeed,
+                            segmentDurationMs = segMs.roundToInt().toLong(),
+                        ),
+                    )
+                }
+            }
+            LabeledSlider(
+                label = "Segment Length (source)",
+                value = segMs.coerceIn(200f, maxSegMs),
+                range = 200f..maxSegMs,
+                readout = String.format(Locale.US, "%.2fs", segMs / 1000f),
+            ) { nextLen ->
+                segMs = ((nextLen / 20f).roundToInt() * 20).toFloat().coerceIn(200f, maxSegMs)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        onUndo()
+                        onClose()
+                    },
+                    modifier = Modifier.weight(1f).testTag("smooth_reverse_undo_button"),
+                ) {
+                    Text("Undo Effect", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Button(
+                    onClick = {
+                        if (groupId != null) {
+                            onUpdateConfig(
+                                groupId,
+                                initCfg.copy(
+                                    zoomPercent = zoomPct,
+                                    startSpeed = startSpeed,
+                                    endSpeed = endSpeed,
+                                    segmentDurationMs = segMs.roundToInt().toLong(),
+                                ),
+                            )
+                        }
+                        onClose()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = LunaMint, contentColor = ObsidianBackground),
+                    modifier = Modifier.weight(1f).testTag("smooth_reverse_apply_button"),
+                ) {
+                    Text("Apply Changes", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
 

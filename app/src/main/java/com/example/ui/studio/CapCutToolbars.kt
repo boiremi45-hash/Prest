@@ -96,6 +96,8 @@ enum class ActiveEditorSheet {
     ASPECT_RATIO,
     BACKGROUND,
     REVERSE,
+    SMOOTH_REVERSE,
+    TIMESLICE,
 }
 
 @Composable
@@ -146,6 +148,7 @@ fun CapCutClipSelectedBar(
     onMoveToOverlay: () -> Unit,
     onFreeze: () -> Unit,
     onReverseToggle: () -> Unit,
+    onSmoothReverse: () -> Unit,
     onResetClipAll: () -> Unit,
     onOpenSheet: (ActiveEditorSheet) -> Unit,
     modifier: Modifier = Modifier,
@@ -252,6 +255,16 @@ fun CapCutClipSelectedBar(
                 tag = "clip_tool_reverse",
                 highlightColor = if (clip.isReversed) CyberCyan else Color.White,
                 onClick = onReverseToggle,
+            )
+            val isSmoothRev = clip.smoothReverseRole != com.example.data.model.SmoothReverseRole.NONE
+            ToolbarActionItem(
+                icon = Icons.Filled.AutoAwesome,
+                label = if (isSmoothRev) "Smooth Edit" else "Smooth Reverse",
+                tag = "clip_tool_smooth_reverse",
+                highlightColor = LunaMint,
+                onClick = {
+                    if (isSmoothRev) onOpenSheet(ActiveEditorSheet.SMOOTH_REVERSE) else onSmoothReverse()
+                },
             )
             ToolbarActionItem(Icons.Filled.Vignette, "Mask", "clip_tool_mask") {
                 onOpenSheet(ActiveEditorSheet.MASK)

@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -229,13 +230,20 @@ fun LunaApp() {
         )
     }
 
+    var pendingVideoTargetTrack by remember { mutableIntStateOf(0) }
+    var pendingAudioTargetTrack by remember { mutableIntStateOf(0) }
+
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri -> if (uri != null) viewModel.selectVideo(context, uri) },
     )
     val appendClipLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
-        onResult = { uri -> if (uri != null) viewModel.selectVideo(context, uri, appendNew = true) },
+        onResult = { uri ->
+            val target = pendingVideoTargetTrack
+            pendingVideoTargetTrack = 0
+            if (uri != null) viewModel.selectVideo(context, uri, appendNew = true, targetTrackIndex = target)
+        },
     )
     val replaceClipLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -253,7 +261,9 @@ fun LunaApp() {
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
         onResult = { uri ->
-            if (uri != null) viewModel.addAudioTrack(context, uri)
+            val targetSlot = pendingAudioTargetTrack
+            pendingAudioTargetTrack = 0
+            if (uri != null) viewModel.addAudioTrack(context, uri, targetTrackIndex = targetSlot)
         },
     )
 
@@ -419,11 +429,19 @@ fun LunaApp() {
                                 }
                             },
                             onPickVideo = {
+                                pendingVideoTargetTrack = 0
                                 videoPickerLauncher.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                                 )
                             },
                             onAppendVideoClip = {
+                                pendingVideoTargetTrack = 0
+                                appendClipLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                )
+                            },
+                            onAppendVideoClipToTrack = { trackIdx ->
+                                pendingVideoTargetTrack = trackIdx
                                 appendClipLauncher.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                                 )
@@ -438,7 +456,14 @@ fun LunaApp() {
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                                 )
                             },
-                            onPickAudioFile = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                            onPickAudioFile = {
+                                pendingAudioTargetTrack = 0
+                                audioPickerLauncher.launch(arrayOf("audio/*"))
+                            },
+                            onPickAudioToSlot = { slotIdx ->
+                                pendingAudioTargetTrack = slotIdx
+                                audioPickerLauncher.launch(arrayOf("audio/*"))
+                            },
                             onImportFfxOrCube = { ffxImportLauncher.launch(arrayOf("*/*")) },
                             onSelectClip = { viewModel.selectClip(it) },
                             onSelectOverlay = { viewModel.selectOverlay(it) },
@@ -457,21 +482,32 @@ fun LunaApp() {
                             onRedo = { viewModel.redo() },
                             onSplitClip = { viewModel.splitSelectedOrActiveClip() },
                             onMoveClip = { cid, delta -> viewModel.moveVideoClip(cid, delta) },
+                            onMoveClipToTrack = { cid, targetTrack -> viewModel.moveVideoClipToTrack(cid, targetTrack) },
                             onMoveOverlay = { oid, delta -> viewModel.moveOverlay(oid, delta) },
                             onMoveEffect = { eid, delta -> viewModel.moveEffectLayer(eid, delta) },
                             onMoveText = { tid, delta -> viewModel.moveTextTrack(tid, delta) },
                             onMoveAudio = { aid, delta -> viewModel.moveAudioTrack(aid, delta) },
+                            onMoveAudioToSlot = { aid, slot -> viewModel.moveAudioToSlot(aid, slot) },
                             onTrimClipEdge = { cid, isStart, delta -> viewModel.trimClipEdge(cid, isStart, delta) },
                             onTrimOverlayEdge = { oid, isStart, delta -> viewModel.trimOverlayEdge(oid, isStart, delta) },
                             onTrimEffectEdge = { eid, isStart, delta -> viewModel.trimEffectEdge(eid, isStart, delta) },
                             onTrimTextEdge = { tid, isStart, delta -> viewModel.trimTextEdge(tid, isStart, delta) },
                             onTrimAudioEdge = { aid, isStart, delta -> viewModel.trimAudioEdge(aid, isStart, delta) },
+                            onAddVideoTrack = { viewModel.addVideoTrack() },
+                            onToggleTrackHidden = { tid -> viewModel.toggleTrackHidden(tid) },
+                            onToggleTrackLocked = { tid -> viewModel.toggleTrackLocked(tid) },
+                            onToggleTrackMuted = { tid -> viewModel.toggleTrackMuted(tid) },
+                            onResizeTrackHeight = { tid, h -> viewModel.resizeTrackHeight(tid, h) },
                             onDuplicateClip = { viewModel.duplicateSelectedClip() },
                             onDeleteClip = { viewModel.deleteSelectedClip() },
                             onFreezeClip = { viewModel.freezeSelectedClipAtPlayhead() },
                             onReverseClip = { viewModel.toggleReverseSelectedClip(context) },
                             onReverseMultipleClips = { ids, isBatchAll, revAudio ->
                                 viewModel.reverseMultipleClips(context, ids, isBatchAll, revAudio)
+                            },
+                            onSmoothAutoReverse = { viewModel.applySmoothAutoReverse(context) },
+                            onUpdateSmoothReverseConfig = { gid, cfg ->
+                                viewModel.updateSmoothReverseConfig(context, gid, cfg, commitHistory = false)
                             },
                             onResetClipAll = { viewModel.resetSelectedClipAll() },
                             onMoveClipToOverlay = { viewModel.demoteSelectedClipToOverlay() },
@@ -503,6 +539,9 @@ fun LunaApp() {
                             onDuplicateEffect = { viewModel.duplicateEffectLayer(it) },
                             onSetEffectObjectTarget = { id, all -> viewModel.setEffectObjectTarget(id, all) },
                             onDeleteEffect = { viewModel.removeEffectLayer(it) },
+                            onEnableTimeslice = { viewModel.enableTimesliceOnSelectedClip() },
+                            onUpdateTimeslice = { cfg, hist -> viewModel.updateSelectedClipTimeslice(cfg, hist) },
+                            onDeleteTimeslice = { viewModel.removeSelectedClipTimeslice() },
                             onUpdateTransition = { id, t, d, all -> viewModel.updateTransition(id, t, d, all) },
                             onUpdateAdjust = { viewModel.updateAdjust(it) },
                             onAutoAdjust = { viewModel.applySmartAutoAdjust() },

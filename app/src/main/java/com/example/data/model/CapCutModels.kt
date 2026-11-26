@@ -178,17 +178,18 @@ object KeyframeEvaluator {
                 val span = (b.timeMs - a.timeMs).coerceAtLeast(1L).toFloat()
                 val rawT = (localTimeMs - a.timeMs) / span
                 val e = a.easingToNext.evaluate(rawT)
-                fun lerp(v0: Float, v1: Float) = v0 + (v1 - v0) * e
+                fun lerpIfChanged(v0: Float, v1: Float): Float =
+                    if (abs(v1 - v0) < 0.0001f) v0 else v0 + (v1 - v0) * e
                 return EvaluatedTransformState(
-                    posX = lerp(a.posX, b.posX),
-                    posY = lerp(a.posY, b.posY),
-                    zoomPercent = lerp(a.zoomPercent, b.zoomPercent),
-                    rotateDeg = lerp(a.rotateDeg, b.rotateDeg),
-                    opacity = lerp(a.opacity, b.opacity).coerceIn(0f, 1f),
-                    brightness = lerp(a.brightness, b.brightness),
-                    contrast = lerp(a.contrast, b.contrast),
-                    saturation = lerp(a.saturation, b.saturation),
-                    filterIntensity = lerp(a.filterIntensity, b.filterIntensity).coerceIn(0f, 1f),
+                    posX = lerpIfChanged(a.posX, b.posX),
+                    posY = lerpIfChanged(a.posY, b.posY),
+                    zoomPercent = lerpIfChanged(a.zoomPercent, b.zoomPercent),
+                    rotateDeg = lerpIfChanged(a.rotateDeg, b.rotateDeg),
+                    opacity = lerpIfChanged(a.opacity, b.opacity).coerceIn(0f, 1f),
+                    brightness = lerpIfChanged(a.brightness, b.brightness),
+                    contrast = lerpIfChanged(a.contrast, b.contrast),
+                    saturation = lerpIfChanged(a.saturation, b.saturation),
+                    filterIntensity = lerpIfChanged(a.filterIntensity, b.filterIntensity).coerceIn(0f, 1f),
                 )
             }
         }
@@ -261,13 +262,14 @@ object TextKeyframeEvaluator {
                 val span = (b.timeMs - a.timeMs).coerceAtLeast(1L).toFloat()
                 val rawT = (localTimeMs - a.timeMs) / span
                 val e = a.easingToNext.evaluate(rawT)
-                fun lerp(v0: Float, v1: Float) = v0 + (v1 - v0) * e
+                fun lerpIfChanged(v0: Float, v1: Float): Float =
+                    if (abs(v1 - v0) < 0.0001f) v0 else v0 + (v1 - v0) * e
                 return EvaluatedTextState(
-                    posX = lerp(a.posX, b.posX),
-                    posY = lerp(a.posY, b.posY),
-                    scale = lerp(a.scale, b.scale).coerceIn(0.35f, 3.5f),
-                    rotationDeg = lerp(a.rotationDeg, b.rotationDeg),
-                    opacity = lerp(a.opacity, b.opacity).coerceIn(0f, 1f),
+                    posX = lerpIfChanged(a.posX, b.posX),
+                    posY = lerpIfChanged(a.posY, b.posY),
+                    scale = lerpIfChanged(a.scale, b.scale).coerceIn(0.35f, 3.5f),
+                    rotationDeg = lerpIfChanged(a.rotationDeg, b.rotationDeg),
+                    opacity = lerpIfChanged(a.opacity, b.opacity).coerceIn(0f, 1f),
                 )
             }
         }
@@ -345,6 +347,12 @@ enum class VelocityPreset(val label: String, val points: List<Float>) {
 }
 
 @Serializable
+data class SpeedCurvePoint(
+    val position01: Float, // 0f .. 1f
+    val speed: Float,      // 0.1f .. 10.0f
+)
+
+@Serializable
 data class SpeedSettings(
     val mode: SpeedMode = SpeedMode.NORMAL,
     val normalSpeed: Float = 1.0f, // 0.1f .. 100.0f
@@ -353,26 +361,146 @@ data class SpeedSettings(
     val changeAudioPitch: Boolean = false,
     val curvePreset: CurveSpeedPreset = CurveSpeedPreset.CUSTOM,
     val curvePoints: List<Float> = listOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f),
+    val curveControlPoints: List<SpeedCurvePoint> = emptyList(),
+    val curveBezierSmooth: Boolean = false,
     val velocityPreset: VelocityPreset = VelocityPreset.NONE,
 ) {
+    fun resolvedCurveControlPoints(): List<SpeedCurvePoint> {
+        if (curveControlPoints.isNotEmpty()) {
+            return curveControlPoints
+                .map { SpeedCurvePoint(it.position01.coerceIn(0f, 1f), it.speed.coerceIn(0.1f, 10f)) }
+                .sortedBy { it.position01 }
+        }
+        val pts = curvePoints.ifEmpty { listOf(1.0f, 1.0f) }
+        if (pts.size == 1) {
+            return listOf(
+                SpeedCurvePoint(0f, pts.first().coerceIn(0.1f, 10f)),
+                SpeedCurvePoint(1f, pts.first().coerceIn(0.1f, 10f)),
+            )
+        }
+        return pts.mapIndexed { idx, v ->
+            SpeedCurvePoint(idx / (pts.size - 1f), v.coerceIn(0.1f, 10f))
+        }
+    }
+
     fun effectiveSpeedMultiplier(): Float = when (mode) {
         SpeedMode.NORMAL -> normalSpeed.coerceIn(0.1f, 100f)
-        SpeedMode.CURVE -> curvePoints.average().toFloat().coerceIn(0.1f, 10f)
+        SpeedMode.CURVE -> {
+            if (curveControlPoints.isEmpty() && !curveBezierSmooth) {
+                curvePoints.average().toFloat().coerceIn(0.1f, 10f)
+            } else {
+                val samples = 32
+                var invSum = 0f
+                for (i in 0..samples) {
+                    invSum += 1f / speedAtProgress(i / samples.toFloat()).coerceIn(0.1f, 10f)
+                }
+                ((samples + 1).toFloat() / invSum.coerceAtLeast(0.01f)).coerceIn(0.1f, 10f)
+            }
+        }
         SpeedMode.VELOCITY -> velocityPreset.points.average().toFloat().coerceIn(0.1f, 10f)
     }
 
     fun speedAtProgress(progress01: Float): Float {
-        val pts = when (mode) {
-            SpeedMode.NORMAL -> return normalSpeed.coerceIn(0.1f, 100f)
-            SpeedMode.CURVE -> curvePoints
-            SpeedMode.VELOCITY -> if (velocityPreset == VelocityPreset.NONE) curvePoints else velocityPreset.points
+        val t = progress01.coerceIn(0f, 1f)
+        return when (mode) {
+            SpeedMode.NORMAL -> normalSpeed.coerceIn(0.1f, 100f)
+            SpeedMode.CURVE -> {
+                if (curveControlPoints.isEmpty() && !curveBezierSmooth) {
+                    val pts = curvePoints
+                    if (pts.isEmpty()) return 1f
+                    if (pts.size == 1) return pts.first().coerceIn(0.1f, 100f)
+                    val scaled = t * (pts.size - 1)
+                    val i = scaled.toInt().coerceIn(0, pts.size - 2)
+                    val f = scaled - i
+                    (pts[i] + (pts[i + 1] - pts[i]) * f).coerceIn(0.1f, 100f)
+                } else {
+                    val ctrl = resolvedCurveControlPoints()
+                    if (ctrl.isEmpty()) return 1f
+                    if (ctrl.size == 1) return ctrl.first().speed.coerceIn(0.1f, 10f)
+                    if (t <= ctrl.first().position01) return ctrl.first().speed.coerceIn(0.1f, 10f)
+                    if (t >= ctrl.last().position01) return ctrl.last().speed.coerceIn(0.1f, 10f)
+                    var segIdx = 0
+                    for (i in 0 until ctrl.lastIndex) {
+                        if (t >= ctrl[i].position01 && t <= ctrl[i + 1].position01) {
+                            segIdx = i
+                            break
+                        }
+                    }
+                    val a = ctrl[segIdx]
+                    val b = ctrl[segIdx + 1]
+                    val span = (b.position01 - a.position01).coerceAtLeast(0.0001f)
+                    val u = ((t - a.position01) / span).coerceIn(0f, 1f)
+                    val interp = if (curveBezierSmooth) u * u * (3f - 2f * u) else u
+                    (a.speed + (b.speed - a.speed) * interp).coerceIn(0.1f, 10f)
+                }
+            }
+            SpeedMode.VELOCITY -> {
+                val pts = if (velocityPreset == VelocityPreset.NONE) curvePoints else velocityPreset.points
+                if (pts.isEmpty()) return 1f
+                if (pts.size == 1) return pts.first().coerceIn(0.1f, 100f)
+                val scaled = t * (pts.size - 1)
+                val i = scaled.toInt().coerceIn(0, pts.size - 2)
+                val f = scaled - i
+                (pts[i] + (pts[i + 1] - pts[i]) * f).coerceIn(0.1f, 100f)
+            }
         }
-        if (pts.isEmpty()) return 1f
-        if (pts.size == 1) return pts.first().coerceIn(0.1f, 100f)
-        val scaled = progress01.coerceIn(0f, 1f) * (pts.size - 1)
-        val i = scaled.toInt().coerceIn(0, pts.size - 2)
-        val f = scaled - i
-        return (pts[i] + (pts[i + 1] - pts[i]) * f).coerceIn(0.1f, 100f)
+    }
+
+    fun mirrored(): SpeedSettings {
+        val flippedControl = resolvedCurveControlPoints()
+            .map { SpeedCurvePoint((1f - it.position01).coerceIn(0f, 1f), it.speed) }
+            .sortedBy { it.position01 }
+        return copy(
+            mode = SpeedMode.CURVE,
+            curvePreset = CurveSpeedPreset.CUSTOM,
+            curvePoints = flippedControl.map { it.speed },
+            curveControlPoints = flippedControl,
+            curveBezierSmooth = true,
+        )
+    }
+
+    fun sourceProgressAtTimelineProgress(timelineProgress01: Float): Float {
+        if (mode == SpeedMode.NORMAL) return timelineProgress01.coerceIn(0f, 1f)
+        val tp = timelineProgress01.coerceIn(0f, 1f)
+        if (tp <= 0f) return 0f
+        if (tp >= 1f) return 1f
+        val steps = 32
+        val cumTime = FloatArray(steps + 1)
+        for (i in 1..steps) {
+            val midSource = (i - 0.5f) / steps
+            val spd = speedAtProgress(midSource).coerceIn(0.1f, 10f)
+            cumTime[i] = cumTime[i - 1] + (1f / spd)
+        }
+        val total = cumTime[steps].coerceAtLeast(0.0001f)
+        val target = tp * total
+        for (i in 1..steps) {
+            if (target <= cumTime[i]) {
+                val segSpan = (cumTime[i] - cumTime[i - 1]).coerceAtLeast(0.0001f)
+                val frac = (target - cumTime[i - 1]) / segSpan
+                return (((i - 1) + frac) / steps).coerceIn(0f, 1f)
+            }
+        }
+        return 1f
+    }
+
+    fun timelineProgressAtSourceProgress(sourceProgress01: Float): Float {
+        if (mode == SpeedMode.NORMAL) return sourceProgress01.coerceIn(0f, 1f)
+        val sp = sourceProgress01.coerceIn(0f, 1f)
+        if (sp <= 0f) return 0f
+        if (sp >= 1f) return 1f
+        val steps = 32
+        val cumTime = FloatArray(steps + 1)
+        for (i in 1..steps) {
+            val midSource = (i - 0.5f) / steps
+            val spd = speedAtProgress(midSource).coerceIn(0.1f, 10f)
+            cumTime[i] = cumTime[i - 1] + (1f / spd)
+        }
+        val total = cumTime[steps].coerceAtLeast(0.0001f)
+        val scaled = sp * steps
+        val idx = scaled.toInt().coerceIn(0, steps - 1)
+        val frac = scaled - idx
+        val tVal = cumTime[idx] + (cumTime[idx + 1] - cumTime[idx]) * frac
+        return (tVal / total).coerceIn(0f, 1f)
     }
 }
 
@@ -717,10 +845,77 @@ data class OverlayTrackItem(
 )
 
 @Serializable
+enum class TimelineTrackKind {
+    TEXT,
+    VIDEO,
+    AUDIO,
+}
+
+@Serializable
+data class TimelineTrackConfig(
+    val id: String,
+    val kind: TimelineTrackKind,
+    val trackIndex: Int,
+    val label: String,
+    val subtitle: String = "",
+    val isHidden: Boolean = false,
+    val isLocked: Boolean = false,
+    val isMuted: Boolean = false,
+    val heightDp: Float = 54f,
+)
+
+fun defaultTimelineTracks(videoCount: Int = 3): List<TimelineTrackConfig> {
+    val safeVideos = videoCount.coerceIn(1, 8)
+    val list = mutableListOf<TimelineTrackConfig>()
+    list += TimelineTrackConfig(
+        id = "track_text_0",
+        kind = TimelineTrackKind.TEXT,
+        trackIndex = 0,
+        label = "TEXT",
+        subtitle = "Text / Sticker",
+        heightDp = 38f,
+    )
+    for (idx in 0 until safeVideos) {
+        val subtitle = when (idx) {
+            0 -> "Main video"
+            1 -> "Overlay / PIP"
+            2 -> "Extra overlay"
+            else -> "Video layer"
+        }
+        list += TimelineTrackConfig(
+            id = "track_video_$idx",
+            kind = TimelineTrackKind.VIDEO,
+            trackIndex = idx,
+            label = "V${idx + 1}",
+            subtitle = subtitle,
+            heightDp = if (idx == 0) 58f else 50f,
+        )
+    }
+    list += TimelineTrackConfig(
+        id = "track_audio_0",
+        kind = TimelineTrackKind.AUDIO,
+        trackIndex = 0,
+        label = "A1",
+        subtitle = "Music",
+        heightDp = 38f,
+    )
+    list += TimelineTrackConfig(
+        id = "track_audio_1",
+        kind = TimelineTrackKind.AUDIO,
+        trackIndex = 1,
+        label = "A2",
+        subtitle = "Sound / Voice",
+        heightDp = 38f,
+    )
+    return list
+}
+
+@Serializable
 data class AudioTrackItem(
     val id: String = UUID.randomUUID().toString(),
     val uriString: String? = null,
     val title: String,
+    val trackIndex: Int = 0, // 0 = A1 (Music), 1 = A2 (Sound / Voiceover)
     val startMs: Long = 0L,
     val endMs: Long = 8_000L,
     val sourceStartMs: Long = 0L,
@@ -747,10 +942,78 @@ data class TextTrackItem(
 )
 
 @Serializable
+enum class SmoothReverseRole {
+    NONE,
+    ORIGINAL,
+    REVERSED,
+}
+
+@Serializable
+data class SmoothReverseConfig(
+    val zoomPercent: Float = 140f,
+    val startSpeed: Float = 10.0f,
+    val endSpeed: Float = 0.1f,
+    val segmentDurationMs: Long = 400L,
+    val originalTrimStartMs: Long = 0L,
+    val originalTrimEndMs: Long = 8_000L,
+)
+
+@Serializable
+enum class TimesliceDirection(val label: String, val shortLabel: String) {
+    LEFT_TO_RIGHT("Left to Right", "L → R"),
+    RIGHT_TO_LEFT("Right to Left", "R → L"),
+    TOP_TO_BOTTOM("Top to Bottom", "T → B"),
+    BOTTOM_TO_TOP("Bottom to Top", "B → T"),
+}
+
+@Serializable
+data class TimesliceSettings(
+    val enabled: Boolean = false,
+    val slices: Int = 10,                // 3 .. 30
+    val direction: TimesliceDirection = TimesliceDirection.LEFT_TO_RIGHT,
+    val timeSpreadSec: Float = 0.3f,     // 0.1f .. 1.0f between slices
+    val feather: Float = 25f,            // 0f .. 100f soft-edge blend
+    val intensity: Float = 1.0f,         // 0f .. 1.0f effect blend
+    val previewEnabled: Boolean = true,  // Preview On / Off
+) {
+    fun clampedSlices(): Int = slices.coerceIn(3, 30)
+
+    fun timeSpreadMs(): Long = (timeSpreadSec.coerceIn(0.1f, 1.0f) * 1000f).toLong()
+
+    fun isHorizontalSlices(): Boolean =
+        direction == TimesliceDirection.LEFT_TO_RIGHT || direction == TimesliceDirection.RIGHT_TO_LEFT
+
+    /**
+     * Maps visual slice index `i` (0..N-1 left-to-right or top-to-bottom) to sampled source timestamp,
+     * applying T + (step * timeSpread) along the active direction and clamping cleanly within [clipStartMs, clipEndMs].
+     */
+    fun sampleTimeMs(
+        baseTimeMs: Long,
+        visualSliceIndex: Int,
+        clipStartMs: Long,
+        clipEndMs: Long,
+    ): Long {
+        val count = clampedSlices()
+        val idx = visualSliceIndex.coerceIn(0, count - 1)
+        val directionalStep = when (direction) {
+            TimesliceDirection.LEFT_TO_RIGHT,
+            TimesliceDirection.TOP_TO_BOTTOM -> idx
+            TimesliceDirection.RIGHT_TO_LEFT,
+            TimesliceDirection.BOTTOM_TO_TOP -> (count - 1 - idx)
+        }
+        val raw = baseTimeMs + directionalStep.toLong() * timeSpreadMs()
+        val safeStart = clipStartMs.coerceAtLeast(0L)
+        val safeEnd = clipEndMs.coerceAtLeast(safeStart)
+        return raw.coerceIn(safeStart, safeEnd)
+    }
+}
+
+@Serializable
 data class VideoClipSegment(
     val id: String = UUID.randomUUID().toString(),
     val sourceUriString: String? = null,
     val displayName: String = "Main Clip",
+    val trackIndex: Int = 0, // 0 = V1 (Main), 1 = V2 (Overlay/PIP), 2 = V3 (Extra Overlay), ...
     val width: Int = 1920,
     val height: Int = 1080,
     val timelineStartMs: Long = 0L,
@@ -761,6 +1024,10 @@ data class VideoClipSegment(
     val reversedUriString: String? = null,
     val reverseAudio: Boolean = true,
     val cutFlashPunchOnStart: Boolean = false,
+    val smoothReverseRole: SmoothReverseRole = SmoothReverseRole.NONE,
+    val smoothReverseGroupId: String? = null,
+    val smoothReverseConfig: SmoothReverseConfig? = null,
+    val timeslice: TimesliceSettings = TimesliceSettings(),
     val isFrozen: Boolean = false,
     val freezeAtMs: Long = 0L,
     val freezeDurationMs: Long = 3_000L,
@@ -783,12 +1050,12 @@ data class VideoClipSegment(
     fun baseDurationMs(): Long = if (isFrozen) {
         freezeDurationMs.coerceAtLeast(500L)
     } else {
-        (trimEndMs - trimStartMs).coerceAtLeast(250L)
+        (trimEndMs - trimStartMs).coerceAtLeast(200L)
     }
 
     fun timelineDurationMs(): Long {
         val spd = speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
-        return (baseDurationMs() / spd).toLong().coerceAtLeast(250L)
+        return (baseDurationMs() / spd).toLong().coerceAtLeast(200L)
     }
 
     fun hasReversedMediaReady(): Boolean = !reversedUriString.isNullOrBlank()
@@ -805,7 +1072,7 @@ data class VideoClipSegment(
     fun effectiveTrimEndMs(): Long = when {
         isFrozen -> (freezeAtMs + 250L).coerceAtMost(sourceDurationMs.coerceAtLeast(300L))
         isReversed && !reversedUriString.isNullOrBlank() -> baseDurationMs()
-        else -> trimEndMs.coerceAtLeast(trimStartMs + 250L)
+        else -> trimEndMs.coerceAtLeast(trimStartMs + 200L)
     }
 
     fun effectiveSourceDurationMs(): Long =
@@ -825,7 +1092,49 @@ data class TimelineSnapshot(
     val filterIntensity: Float = 1.0f,
     val hasEndingCard: Boolean = false,
     val canvasBackgroundArgb: Long = 0xFF05060AL,
-)
+    val videoTrackCount: Int = 3,
+    val trackConfigs: List<TimelineTrackConfig> = defaultTimelineTracks(3),
+) {
+    fun effectiveVideoTrackCount(): Int = maxOf(
+        videoTrackCount.coerceIn(1, 8),
+        (clips.maxOfOrNull { it.trackIndex } ?: 0) + 1,
+        3,
+    ).coerceIn(1, 8)
+
+    fun normalizedTrackConfigs(): List<TimelineTrackConfig> {
+        val count = effectiveVideoTrackCount()
+        val defaults = defaultTimelineTracks(count)
+        val byId = trackConfigs.associateBy { it.id }
+        return defaults.map { def -> byId[def.id] ?: def }
+    }
+
+    fun trackConfigFor(kind: TimelineTrackKind, trackIndex: Int): TimelineTrackConfig? =
+        normalizedTrackConfigs().firstOrNull { it.kind == kind && it.trackIndex == trackIndex }
+
+    fun isVideoTrackHidden(trackIndex: Int): Boolean =
+        trackConfigFor(TimelineTrackKind.VIDEO, trackIndex)?.isHidden == true
+
+    fun isVideoTrackLocked(trackIndex: Int): Boolean =
+        trackConfigFor(TimelineTrackKind.VIDEO, trackIndex)?.isLocked == true
+
+    fun isVideoTrackMuted(trackIndex: Int): Boolean =
+        trackConfigFor(TimelineTrackKind.VIDEO, trackIndex)?.isMuted == true
+
+    fun isTextTrackHidden(): Boolean =
+        trackConfigFor(TimelineTrackKind.TEXT, 0)?.isHidden == true
+
+    fun isTextTrackLocked(): Boolean =
+        trackConfigFor(TimelineTrackKind.TEXT, 0)?.isLocked == true
+
+    fun isAudioTrackHidden(trackIndex: Int): Boolean =
+        trackConfigFor(TimelineTrackKind.AUDIO, trackIndex)?.isHidden == true
+
+    fun isAudioTrackLocked(trackIndex: Int): Boolean =
+        trackConfigFor(TimelineTrackKind.AUDIO, trackIndex)?.isLocked == true
+
+    fun isAudioTrackMuted(trackIndex: Int): Boolean =
+        trackConfigFor(TimelineTrackKind.AUDIO, trackIndex)?.isMuted == true
+}
 
 @Serializable
 data class PersistedProjectState(
@@ -847,6 +1156,16 @@ data class ClipTimelineSpan(
     val endMs: Long,
 )
 
+fun computeTrackSpans(clips: List<VideoClipSegment>, trackIndex: Int): List<ClipTimelineSpan> {
+    return clips
+        .filter { it.trackIndex == trackIndex }
+        .sortedBy { it.timelineStartMs }
+        .map { clip ->
+            val start = clip.timelineStartMs.coerceAtLeast(0L)
+            ClipTimelineSpan(clip = clip, startMs = start, endMs = start + clip.timelineDurationMs())
+        }
+}
+
 fun computeTotalVideoDurationMs(clips: List<VideoClipSegment>): Long {
     if (clips.isEmpty()) return 1_000L
     val clipEnd = clips.sortedBy { it.timelineStartMs }.maxOfOrNull { clip ->
@@ -854,6 +1173,9 @@ fun computeTotalVideoDurationMs(clips: List<VideoClipSegment>): Long {
     } ?: 0L
     return clipEnd.coerceAtLeast(1_000L)
 }
+
+fun computeTimelineWidthPx(totalDurationMs: Long, pxPerSec: Float): Float =
+    ((totalDurationMs.coerceAtLeast(1_000L) / 1000f) * pxPerSec).coerceAtLeast(1f)
 
 fun isTimelineItemActiveAt(
     startMs: Long,
