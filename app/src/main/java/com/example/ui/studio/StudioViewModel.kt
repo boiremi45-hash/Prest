@@ -27,6 +27,7 @@ import com.example.data.model.MaskSettings
 import com.example.data.model.MotionBlurSettings
 import com.example.data.model.OverlayTrackItem
 import com.example.data.model.PersistedProjectState
+import com.example.data.model.PresetCategory
 import com.example.data.model.RgbCurvesSpec
 import com.example.data.model.SmoothReverseConfig
 import com.example.data.model.SmoothReverseRole
@@ -40,6 +41,7 @@ import com.example.data.model.TextTrackItem
 import com.example.data.model.TimelineSnapshot
 import com.example.data.model.TimelineTrackConfig
 import com.example.data.model.TimelineTrackKind
+import com.example.data.model.TimesliceMode
 import com.example.data.model.TimesliceSettings
 import com.example.data.model.TransformSettings
 import com.example.data.model.TransitionSpec
@@ -232,6 +234,7 @@ class StudioViewModel(
     }
 
     fun clearStatusMessage() { _statusMessage.value = null }
+    fun postStatusMessage(message: String) { _statusMessage.value = message }
     fun toggleBypass() { _bypassEffects.value = !_bypassEffects.value }
     fun updateTimelineZoom(zoom: Float) {
         _timelineZoom.value = zoom.coerceIn(0.45f, 3.8f)
@@ -702,14 +705,18 @@ class StudioViewModel(
         }
         val localMs = t - targetSpan.startMs
         val clipLen = targetSpan.endMs - targetSpan.startMs
-        if (localMs < 300L || clipLen - localMs < 300L) {
-            _statusMessage.value = "Move playhead inside clip to split."
+        if (!isPlayheadInsideRange(t, targetSpan.startMs, targetSpan.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        if (localMs < 200L || clipLen - localMs < 200L) {
+            _statusMessage.value = "Move playhead further inside clip to split."
             return
         }
         val spd = clip.speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
         val splitSourceDelta = (localMs * spd).toLong()
         val splitSourceMs = (clip.trimStartMs + splitSourceDelta)
-            .coerceIn(clip.trimStartMs + 250L, clip.trimEndMs - 250L)
+            .coerceIn(clip.trimStartMs + 100L, (clip.trimEndMs - 100L).coerceAtLeast(clip.trimStartMs + 100L))
 
         val first = clip.copy(
             timelineStartMs = targetSpan.startMs,
@@ -739,6 +746,7 @@ class StudioViewModel(
                 (secondId to curThumbs.subList(midIdx, curThumbs.size))
         }
         _selectedClipId.value = secondId
+        _statusMessage.value = "Split at ${formatSplitTimeMs(t)}"
         saveProjectImmediately()
     }
 
@@ -1107,6 +1115,7 @@ class StudioViewModel(
                         val updated = clip.copy(
                             isReversed = true,
                             reverseAudio = reverseAudio,
+                            isMuted = if (!reverseAudio) true else clip.isMuted,
                             cutFlashPunchOnStart = isShortCut,
                         )
                         updatedClipsMap[clip.id] = updated
@@ -1143,6 +1152,7 @@ class StudioViewModel(
                                 isReversed = true,
                                 reversedUriString = out.reversedUri.toString(),
                                 reverseAudio = reverseAudio,
+                                isMuted = if (!reverseAudio) true else clip.isMuted,
                                 cutFlashPunchOnStart = isShortCut,
                             )
                             updatedClipsMap[clip.id] = updated
@@ -1227,7 +1237,7 @@ class StudioViewModel(
                 clipId = reversedClipId,
                 trimStartMs = trimWindow.first,
                 trimEndMs = trimWindow.second,
-                reverseAudio = true,
+                reverseAudio = false,
                 targetWidth = target.width,
                 targetHeight = target.height,
                 minFrameGapUs = 14_000L,
@@ -1838,10 +1848,15 @@ class StudioViewModel(
 
     // --- Keyframes & Easing Graphs (Transform + Text ONLY; NEVER alters Audio Volume) ---
     fun addTransformKeyframeAtPlayhead() {
+        val t = _playheadMs.value
         val textId = _selectedTextId.value
         if (textId != null) {
             val tx = _snapshot.value.textTracks.firstOrNull { it.id == textId } ?: return
-            val local = (_playheadMs.value - tx.startMs).coerceIn(0L, (tx.endMs - tx.startMs).coerceAtLeast(1L))
+            if (!isPlayheadInsideRange(t, tx.startMs, tx.endMs)) {
+                _statusMessage.value = "Move playhead onto clip first"
+                return
+            }
+            val local = (t - tx.startMs).coerceIn(0L, (tx.endMs - tx.startMs).coerceAtLeast(1L))
             val eval = TextKeyframeEvaluator.evaluate(tx.keyframes, local, tx)
             mutate { s ->
                 s.copy(
@@ -1877,7 +1892,13 @@ class StudioViewModel(
         }
 
         val clip = activeClipAtPlayhead()
-        val localMs = localPlayheadMs(clip.id)
+        val span = computeTrackSpans(_snapshot.value.clips, clip.trackIndex)
+            .firstOrNull { it.clip.id == clip.id } ?: return
+        if (!isPlayheadInsideRange(t, span.startMs, span.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        val localMs = (t - span.startMs).coerceIn(0L, span.endMs - span.startMs)
         mutateClip(clip.id) { c ->
             val node = evaluatedTransformNode(c, localMs)
             val existing = c.keyframes.firstOrNull { abs(it.timeMs - localMs) < 140L }
@@ -1940,10 +1961,15 @@ class StudioViewModel(
     }
 
     fun toggleKeyframeAtPlayhead() {
+        val t = _playheadMs.value
         val textId = _selectedTextId.value
         if (textId != null) {
             val tx = _snapshot.value.textTracks.firstOrNull { it.id == textId } ?: return
-            val local = (_playheadMs.value - tx.startMs).coerceIn(0L, (tx.endMs - tx.startMs).coerceAtLeast(1L))
+            if (!isPlayheadInsideRange(t, tx.startMs, tx.endMs)) {
+                _statusMessage.value = "Move playhead onto clip first"
+                return
+            }
+            val local = (t - tx.startMs).coerceIn(0L, (tx.endMs - tx.startMs).coerceAtLeast(1L))
             val existing = tx.keyframes.firstOrNull { abs(it.timeMs - local) < 140L }
             if (existing != null) {
                 mutate { s ->
@@ -1959,7 +1985,13 @@ class StudioViewModel(
         }
 
         val clip = activeClipAtPlayhead()
-        val localMs = localPlayheadMs(clip.id)
+        val span = computeTrackSpans(_snapshot.value.clips, clip.trackIndex)
+            .firstOrNull { it.clip.id == clip.id } ?: return
+        if (!isPlayheadInsideRange(t, span.startMs, span.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        val localMs = (t - span.startMs).coerceIn(0L, span.endMs - span.startMs)
         val existing = clip.keyframes.firstOrNull { abs(it.timeMs - localMs) < 140L }
         if (existing != null) {
             mutateClip(clip.id) { c -> c.copy(keyframes = c.keyframes.filterNot { it.id == existing.id }) }
@@ -2061,8 +2093,12 @@ class StudioViewModel(
     fun splitEffectAtPlayhead(id: String) {
         val fx = _snapshot.value.effectLayers.firstOrNull { it.id == id } ?: return
         val t = _playheadMs.value
-        if (t <= fx.startMs + 250L || t >= fx.endMs - 250L) {
-            _statusMessage.value = "Move playhead inside effect to split."
+        if (!isPlayheadInsideRange(t, fx.startMs, fx.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        if (t < fx.startMs + 200L || t > fx.endMs - 200L) {
+            _statusMessage.value = "Move playhead further inside effect to split."
             return
         }
         val first = fx.copy(endMs = t)
@@ -2071,6 +2107,7 @@ class StudioViewModel(
             s.copy(effectLayers = s.effectLayers.flatMap { if (it.id == id) listOf(first, second) else listOf(it) })
         }
         selectEffectLayer(second.id)
+        _statusMessage.value = "Split at ${formatSplitTimeMs(t)}"
     }
 
     fun setEffectObjectTarget(id: String, applyToAllVideos: Boolean) {
@@ -2088,39 +2125,312 @@ class StudioViewModel(
         if (_selectedEffectId.value == id) _selectedEffectId.value = null
     }
 
-    fun enableTimesliceOnSelectedClip() {
-        val target = activeClipAtPlayhead()
-        if (!target.timeslice.enabled) {
-            mutateClip(target.id) { c ->
-                c.copy(
-                    timeslice = c.timeslice.copy(
-                        enabled = true,
-                        previewEnabled = true,
-                    )
-                )
-            }
-            _statusMessage.value = "Timeslice enabled on ${target.displayName}"
+    fun applyCapCutTimeslice(
+        amount: Float = 100f,
+        speed: Float = 100f,
+        rotateDeg: Float = 15f,
+        stretchDurationSec: Float = 0.4f,
+        previewEnabled: Boolean = true,
+    ) {
+        val snap = _snapshot.value
+        val activeClip = activeClipAtPlayhead()
+        val trackIdx = activeClip.trackIndex
+        if (snap.isVideoTrackLocked(trackIdx)) {
+            _statusMessage.value = "V${trackIdx + 1} is locked."
+            return
         }
-    }
+        val playhead = _playheadMs.value
+        val safeAmount = amount.coerceIn(0f, 100f)
+        val safeSpeed = speed.coerceIn(0f, 100f)
+        val safeRotate = rotateDeg.coerceIn(0f, 360f)
+        val safeStretchDur = stretchDurationSec.coerceIn(0.3f, 0.5f)
+        val effectLayerId = UUID.randomUUID().toString()
 
-    fun updateSelectedClipTimeslice(settings: TimesliceSettings, commitHistory: Boolean = false) {
-        val target = activeClipAtPlayhead()
-        mutate(pushHistory = commitHistory) { s ->
-            s.copy(
-                clips = s.clips.map { c ->
-                    if (c.id == target.id) c.copy(timeslice = settings) else c
+        var selectedClip1Id = activeClip.id
+        var splitThumbnailUpdate: Pair<String, List<ImageBitmap>>? = null
+        var secondSplitThumbUpdate: Pair<String, List<ImageBitmap>>? = null
+
+        mutate { s ->
+            // Clean any prior CapCut Timeslice effect/transition artifacts first
+            val oldCapCutLayerIds = s.clips.mapNotNull { it.timeslice.capcutEffectLayerId }.toSet()
+            val oldCapCutTransClipIds = s.clips.mapNotNull { it.timeslice.capcutTransitionAfterClipId }.toSet()
+            var workingClips = s.clips.map { c ->
+                if (c.timeslice.isCapCutModeActive()) c.copy(timeslice = TimesliceSettings()) else c
+            }
+            var workingEffects = s.effectLayers.filterNot { it.id in oldCapCutLayerIds }
+            var workingTransitions = s.transitions.filterNot { it.afterClipId in oldCapCutTransClipIds }
+
+            var trackSpans = computeTrackSpans(workingClips, trackIdx)
+            if (trackSpans.isEmpty()) {
+                return@mutate s
+            }
+
+            // Step 5: If only 1 clip on track, auto-split at playhead (or midpoint if at edges)
+            if (trackSpans.size == 1) {
+                val onlySpan = trackSpans.first()
+                val onlyClip = onlySpan.clip
+                val clipLen = (onlySpan.endMs - onlySpan.startMs).coerceAtLeast(1L)
+                if (clipLen >= 450L) {
+                    val minSplit = onlySpan.startMs + 200L
+                    val maxSplit = onlySpan.endMs - 200L
+                    val splitT = if (playhead in minSplit..maxSplit) {
+                        playhead
+                    } else {
+                        (onlySpan.startMs + onlySpan.endMs) / 2L
+                    }
+                    val localMs = (splitT - onlySpan.startMs).coerceIn(200L, clipLen - 200L)
+                    val spd = onlyClip.speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
+                    val splitSourceMs = (onlyClip.trimStartMs + (localMs * spd).toLong())
+                        .coerceIn(onlyClip.trimStartMs + 100L, (onlyClip.trimEndMs - 100L).coerceAtLeast(onlyClip.trimStartMs + 100L))
+                    val first = onlyClip.copy(
+                        timelineStartMs = onlySpan.startMs,
+                        trimEndMs = splitSourceMs,
+                        keyframes = onlyClip.keyframes.filter { it.timeMs <= localMs },
+                        volumeKeyframes = onlyClip.volumeKeyframes.filter { it.timeMs <= localMs },
+                    )
+                    val firstDur = first.timelineDurationMs()
+                    val secondId = UUID.randomUUID().toString()
+                    val second = onlyClip.copy(
+                        id = secondId,
+                        timelineStartMs = onlySpan.startMs + firstDur,
+                        trimStartMs = splitSourceMs,
+                        keyframes = onlyClip.keyframes.filter { it.timeMs >= localMs }.map { it.copy(timeMs = it.timeMs - localMs) },
+                        volumeKeyframes = onlyClip.volumeKeyframes.filter { it.timeMs >= localMs }.map { it.copy(timeMs = it.timeMs - localMs) },
+                    )
+                    workingClips = workingClips.flatMap { if (it.id == onlyClip.id) listOf(first, second) else listOf(it) }
+                    val curThumbs = _clipThumbnails.value[onlyClip.id]
+                    if (!curThumbs.isNullOrEmpty() && curThumbs.size >= 2) {
+                        val midIdx = (curThumbs.size * localMs / clipLen.coerceAtLeast(1L)).toInt().coerceIn(1, curThumbs.lastIndex)
+                        splitThumbnailUpdate = onlyClip.id to curThumbs.subList(0, midIdx)
+                        secondSplitThumbUpdate = secondId to curThumbs.subList(midIdx, curThumbs.size)
+                    }
+                    trackSpans = computeTrackSpans(workingClips, trackIdx)
                 }
+            }
+
+            // Pick Clip 1 + Clip 2 boundary nearest playhead (or first pair)
+            val pairIdx = if (trackSpans.size >= 2) {
+                var bestIdx = 0
+                var bestDist = Long.MAX_VALUE
+                for (idx in 0 until trackSpans.lastIndex) {
+                    val d = kotlin.math.abs(trackSpans[idx].endMs - playhead)
+                    if (d < bestDist) {
+                        bestDist = d
+                        bestIdx = idx
+                    }
+                }
+                bestIdx
+            } else 0
+
+            val span1 = trackSpans[pairIdx]
+            val span2 = trackSpans.getOrNull(pairIdx + 1)
+            val cutMs = span1.endMs
+            selectedClip1Id = span1.clip.id
+
+            // Step 1-3: Auto-apply Delay Glitch spanning END of Clip 1 + START of Clip 2, Object = All Videos (V1+V2)
+            val fxStart = if (span2 != null) {
+                (cutMs - 650L).coerceAtLeast(span1.startMs)
+            } else {
+                span1.startMs
+            }
+            val fxEnd = if (span2 != null) {
+                (cutMs + 650L).coerceAtMost(span2.endMs)
+            } else {
+                span1.endMs
+            }
+            val delayGlitchLayer = VideoEffectLayer(
+                id = effectLayerId,
+                type = CapCutEffectType.DELAY_GLITCH,
+                intensity = (safeAmount / 100f).coerceIn(0f, 1f),
+                startMs = fxStart,
+                endMs = fxEnd.coerceAtLeast(fxStart + 250L),
+                applyToAllVideos = true,
+                speed = safeSpeed,
+                rotateDeg = safeRotate,
+            )
+            workingEffects = workingEffects + delayGlitchLayer
+
+            // Step 4: Auto-add Stretch Left transition between Clip 1 and Clip 2
+            if (span2 != null) {
+                workingTransitions = workingTransitions.filterNot { it.afterClipId == span1.clip.id } +
+                    TransitionSpec(
+                        afterClipId = span1.clip.id,
+                        type = TransitionType.STRETCH_LEFT,
+                        durationSec = safeStretchDur,
+                    )
+            }
+
+            val tsSettings = TimesliceSettings(
+                enabled = true,
+                mode = TimesliceMode.CAPCUT,
+                previewEnabled = previewEnabled,
+                capcutAmount = safeAmount,
+                capcutSpeed = safeSpeed,
+                capcutRotateDeg = safeRotate,
+                capcutStretchDurationSec = safeStretchDur,
+                capcutApplyToAllVideos = true,
+                capcutEffectLayerId = effectLayerId,
+                capcutTransitionAfterClipId = if (span2 != null) span1.clip.id else null,
+            )
+            val finalClips = workingClips.map { c ->
+                if (c.id == span1.clip.id) c.copy(timeslice = tsSettings) else c
+            }
+
+            s.copy(
+                clips = finalClips,
+                effectLayers = workingEffects,
+                transitions = workingTransitions,
             )
         }
+
+        splitThumbnailUpdate?.let { (id, thumbs) ->
+            _clipThumbnails.value = _clipThumbnails.value + (id to thumbs)
+        }
+        secondSplitThumbUpdate?.let { (id, thumbs) ->
+            _clipThumbnails.value = _clipThumbnails.value + (id to thumbs)
+        }
+        _selectedClipId.value = selectedClip1Id
+        _statusMessage.value = "Applied CapCut Timeslice (Delay Glitch + Stretch Left)"
+        saveProjectImmediately()
     }
 
-    fun removeSelectedClipTimeslice() {
+    fun applyNodeTimeslice(settings: TimesliceSettings = TimesliceSettings.viralNodePreset()) {
         val target = activeClipAtPlayhead()
-        if (target.timeslice.enabled) {
-            mutateClip(target.id) { c ->
-                c.copy(timeslice = TimesliceSettings())
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) {
+            _statusMessage.value = "V${target.trackIndex + 1} is locked."
+            return
+        }
+        val oldFxId = target.timeslice.capcutEffectLayerId
+        val oldTrClipId = target.timeslice.capcutTransitionAfterClipId
+        val nodeCfg = settings.copy(
+            enabled = true,
+            mode = TimesliceMode.NODE,
+            previewEnabled = true,
+            capcutEffectLayerId = null,
+            capcutTransitionAfterClipId = null,
+        )
+        mutate { s ->
+            s.copy(
+                clips = s.clips.map { c ->
+                    if (c.id == target.id) c.copy(timeslice = nodeCfg) else c
+                },
+                effectLayers = if (oldFxId != null) s.effectLayers.filterNot { it.id == oldFxId } else s.effectLayers,
+                transitions = if (oldTrClipId != null) s.transitions.filterNot { it.afterClipId == oldTrClipId } else s.transitions,
+            )
+        }
+        _selectedClipId.value = target.id
+        _statusMessage.value = "Applied Time Slice (Node Mode) to ${target.displayName}"
+        saveProjectImmediately()
+    }
+
+    fun updateTimesliceSettings(settings: TimesliceSettings, commitHistory: Boolean = false) {
+        val target = activeClipAtPlayhead()
+        if (_snapshot.value.isVideoTrackLocked(target.trackIndex)) return
+        mutate(pushHistory = commitHistory) { s ->
+            val updatedClips = s.clips.map { c ->
+                if (c.id == target.id) c.copy(timeslice = settings) else c
             }
-            _statusMessage.value = "Removed Timeslice from ${target.displayName}"
+            if (settings.isCapCutModeActive()) {
+                val fxId = settings.capcutEffectLayerId
+                val trClipId = settings.capcutTransitionAfterClipId
+                val updatedFx = if (fxId != null) {
+                    s.effectLayers.map { fx ->
+                        if (fx.id == fxId) {
+                            fx.copy(
+                                intensity = (settings.capcutAmount / 100f).coerceIn(0f, 1f),
+                                speed = settings.capcutSpeed.coerceIn(0f, 100f),
+                                rotateDeg = settings.capcutRotateDeg.coerceIn(0f, 360f),
+                                applyToAllVideos = settings.capcutApplyToAllVideos,
+                            )
+                        } else fx
+                    }
+                } else s.effectLayers
+
+                val updatedTr = if (trClipId != null) {
+                    s.transitions.map { tr ->
+                        if (tr.afterClipId == trClipId) {
+                            tr.copy(durationSec = settings.capcutStretchDurationSec.coerceIn(0.3f, 0.5f))
+                        } else tr
+                    }
+                } else s.transitions
+
+                s.copy(
+                    clips = updatedClips,
+                    effectLayers = updatedFx,
+                    transitions = updatedTr,
+                )
+            } else {
+                s.copy(clips = updatedClips)
+            }
+        }
+    }
+
+    fun toggleTimeslicePreview() {
+        val target = activeClipAtPlayhead()
+        if (!target.timeslice.enabled) return
+        val next = target.timeslice.copy(previewEnabled = !target.timeslice.previewEnabled)
+        updateTimesliceSettings(next, commitHistory = true)
+        _statusMessage.value = if (next.previewEnabled) "Timeslice preview ON" else "Timeslice preview OFF (kept for Export)"
+    }
+
+    fun removeTimeslice() {
+        val target = activeClipAtPlayhead()
+        val fxId = target.timeslice.capcutEffectLayerId
+        val trClipId = target.timeslice.capcutTransitionAfterClipId
+        mutate { s ->
+            s.copy(
+                clips = s.clips.map { c ->
+                    if (c.id == target.id) c.copy(timeslice = TimesliceSettings()) else c
+                },
+                effectLayers = if (fxId != null) s.effectLayers.filterNot { it.id == fxId } else s.effectLayers,
+                transitions = if (trClipId != null) s.transitions.filterNot { it.afterClipId == trClipId } else s.transitions,
+            )
+        }
+        _statusMessage.value = "Removed Timeslice from ${target.displayName}"
+        saveProjectImmediately()
+    }
+
+    fun saveTimesliceAsPreset() {
+        val target = activeClipAtPlayhead()
+        val ts = target.timeslice
+        if (!ts.enabled) {
+            _statusMessage.value = "Apply a Timeslice mode first"
+            return
+        }
+        val preset = if (ts.isCapCutModeActive()) {
+            FfxPreset(
+                name = "CapCut Timeslice Ghost",
+                fileName = "luna_capcut_timeslice.ffx",
+                category = PresetCategory.MOTION_SHAKE.label,
+                description = "CapCut Timeslice: Delay Glitch (Amount ${ts.capcutAmount.toInt()}, Speed ${ts.capcutSpeed.toInt()}, Rotate ${ts.capcutRotateDeg.toInt()}°) + Stretch Left ${String.format(java.util.Locale.US, "%.2fs", ts.capcutStretchDurationSec)}",
+                sourceType = "studio_timeslice",
+                presetFormat = "FFX",
+                ffxVersion = "LUNA Timeslice v2",
+                effectModules = listOf("Delay Glitch", "Stretch Left", "All Videos V1+V2"),
+                tags = listOf("LUNA", "Timeslice", "CapCut Mode", "Ghost"),
+                rotationDegrees = ts.capcutRotateDeg.toDouble().coerceIn(-180.0, 180.0),
+                glowIntensity = 0.25,
+                shakeIntensity = (ts.capcutAmount / 100.0) * 0.2,
+            )
+        } else {
+            FfxPreset(
+                name = "Node Time Slice ${ts.clampedSliceCount()}x",
+                fileName = "luna_node_timeslice.ffx",
+                category = PresetCategory.MOTION_SHAKE.label,
+                description = "Node Time Slice: Count=${ts.clampedSliceCount()}, Angle=${ts.clampedAngleDeg().toInt()}°, Interval=${ts.clampedFrameInterval()}, Offset=${ts.clampedFrameOffset()}, Feather=${String.format(java.util.Locale.US, "%.2f", ts.clampedFeather())}, Animate=${ts.animate}",
+                sourceType = "studio_timeslice",
+                presetFormat = "FFX",
+                ffxVersion = "LUNA Timeslice v2",
+                effectModules = listOf("Time Slice", "Node Pro"),
+                tags = listOf("LUNA", "Timeslice", "Node Mode", "Viral"),
+            )
+        }
+        viewModelScope.launch {
+            repository.createPreset(preset).onSuccess {
+                _statusMessage.value = "Saved \"${preset.name}\" to Preset Vault"
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Could not save Timeslice preset"
+            }
         }
     }
 
@@ -2270,8 +2580,12 @@ class StudioViewModel(
     fun splitOverlayAtPlayhead(id: String) {
         val ov = _snapshot.value.overlays.firstOrNull { it.id == id } ?: return
         val t = _playheadMs.value
-        if (t <= ov.startMs + 250L || t >= ov.endMs - 250L) {
-            _statusMessage.value = "Move playhead inside overlay to split."
+        if (!isPlayheadInsideRange(t, ov.startMs, ov.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        if (t < ov.startMs + 200L || t > ov.endMs - 200L) {
+            _statusMessage.value = "Move playhead further inside overlay to split."
             return
         }
         val first = ov.copy(endMs = t)
@@ -2280,6 +2594,7 @@ class StudioViewModel(
             s.copy(overlays = s.overlays.flatMap { if (it.id == id) listOf(first, second) else listOf(it) })
         }
         selectOverlay(second.id)
+        _statusMessage.value = "Split at ${formatSplitTimeMs(t)}"
     }
 
     fun addAudioTrack(context: Context, uri: Uri?, fallbackTitle: String = "Audio Track", targetTrackIndex: Int = 0) {
@@ -2404,8 +2719,12 @@ class StudioViewModel(
             return
         }
         val t = _playheadMs.value
-        if (t <= au.startMs + 250L || t >= au.endMs - 250L) {
-            _statusMessage.value = "Move playhead inside audio to split."
+        if (!isPlayheadInsideRange(t, au.startMs, au.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        if (t < au.startMs + 200L || t > au.endMs - 200L) {
+            _statusMessage.value = "Move playhead further inside audio to split."
             return
         }
         val localMs = t - au.startMs
@@ -2423,6 +2742,7 @@ class StudioViewModel(
             s.copy(audioTracks = s.audioTracks.flatMap { if (it.id == id) listOf(first, second) else listOf(it) })
         }
         selectAudioTrack(second.id)
+        _statusMessage.value = "Split at ${formatSplitTimeMs(t)}"
     }
 
     fun deleteAudioTrack(id: String) {
@@ -2458,8 +2778,12 @@ class StudioViewModel(
         }
         val tx = _snapshot.value.textTracks.firstOrNull { it.id == id } ?: return
         val t = _playheadMs.value
-        if (t <= tx.startMs + 250L || t >= tx.endMs - 250L) {
-            _statusMessage.value = "Move playhead inside text to split."
+        if (!isPlayheadInsideRange(t, tx.startMs, tx.endMs)) {
+            _statusMessage.value = "Move playhead onto clip first"
+            return
+        }
+        if (t < tx.startMs + 200L || t > tx.endMs - 200L) {
+            _statusMessage.value = "Move playhead further inside text to split."
             return
         }
         val localMs = t - tx.startMs
@@ -2476,6 +2800,7 @@ class StudioViewModel(
             s.copy(textTracks = s.textTracks.flatMap { if (it.id == id) listOf(first, second) else listOf(it) })
         }
         selectTextTrack(second.id)
+        _statusMessage.value = "Split at ${formatSplitTimeMs(t)}"
     }
 
     fun generateAutoCaptions() {
@@ -2834,7 +3159,8 @@ class StudioViewModel(
                 trimEndMs = winEnd,
                 isReversed = true,
                 reversedUriString = reversedUriString,
-                reverseAudio = true,
+                reverseAudio = false,
+                isMuted = true,
                 cutFlashPunchOnStart = false,
                 smoothReverseRole = SmoothReverseRole.REVERSED,
                 smoothReverseGroupId = groupId,
@@ -2870,6 +3196,21 @@ class StudioViewModel(
             )
             val clip2 = temp2.copy(keyframes = clip2Kfs)
             return clip1 to clip2
+        }
+
+        fun isPlayheadInsideRange(playheadMs: Long, startMs: Long, endMs: Long): Boolean =
+            playheadMs in startMs..endMs
+
+        fun canSplitAtPlayhead(
+            playheadMs: Long,
+            startMs: Long,
+            endMs: Long,
+            minPartMs: Long = 200L,
+        ): Boolean = playheadMs >= startMs + minPartMs && playheadMs <= endMs - minPartMs
+
+        fun formatSplitTimeMs(ms: Long): String {
+            val totalSec = (ms.coerceAtLeast(0L) / 1000L)
+            return String.format(java.util.Locale.US, "%02d:%02d", totalSec / 60L, totalSec % 60L)
         }
     }
 }

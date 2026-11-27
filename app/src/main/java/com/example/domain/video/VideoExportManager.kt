@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.media3.common.C
@@ -70,7 +71,7 @@ class VideoExportManager(private val context: Context) {
 
         val visibleClips = snapshot.clips.filter { !snapshot.isVideoTrackHidden(it.trackIndex) }
         val activeVisibleClips = visibleClips.ifEmpty { snapshot.clips }
-        val timesliceTargets = activeVisibleClips.filter { it.timeslice.enabled && it.timeslice.intensity > 0.01f }
+        val timesliceTargets = activeVisibleClips.filter { it.timeslice.isNodeModeActive() }
         val distinctTracks = activeVisibleClips
             .filter { !it.effectiveUriString().isNullOrBlank() || it.id.isNotBlank() }
             .map { it.trackIndex }
@@ -100,7 +101,7 @@ class VideoExportManager(private val context: Context) {
                 var tsDone = 0
                 val updatedClips = snapshot.clips.map { clip ->
                     if (exportCancelled) throw IllegalStateException("Export cancelled")
-                    if (snapshot.isVideoTrackHidden(clip.trackIndex) || !clip.timeslice.enabled || clip.timeslice.intensity <= 0.01f) {
+                    if (snapshot.isVideoTrackHidden(clip.trackIndex) || !clip.timeslice.isNodeModeActive()) {
                         clip
                     } else {
                         val baseUri = clip.effectiveUriString()?.let { runCatching { Uri.parse(it) }.getOrNull() }
@@ -214,6 +215,7 @@ class VideoExportManager(private val context: Context) {
         onProgress: (Int) -> Unit,
         onSuccess: (ExportRecord, savedLocationLabel: String) -> Unit,
         onError: (String) -> Unit,
+        retriedVideoOnly: Boolean = false,
     ) {
         val safeBase = config.fileName
             .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
@@ -240,15 +242,11 @@ class VideoExportManager(private val context: Context) {
             audioSourceClips.filter { it.trackIndex == singleTrackIdx }.sortedBy { it.timelineStartMs }
         }
         val spans = VideoEffectsEngine.computeClipSpans(videoClipsForSeq)
+        val totalVideoDurationMs = spans.maxOfOrNull { it.endMs }?.coerceAtLeast(400L) ?: 1_000L
 
-        // Check if primary video sequence itself carries audio or if all audio comes from separate audio sequences
-        val includePrimaryVideoAudio = compositedVideoClip == null && !config.removeAudio
-        val primaryTrackTypes = if (includePrimaryVideoAudio) {
-            setOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_VIDEO)
-        } else {
-            setOf(C.TRACK_TYPE_VIDEO)
-        }
-        val seqBuilder = EditedMediaItemSequence.Builder(primaryTrackTypes)
+        // Keep video sequence purely C.TRACK_TYPE_VIDEO so video-only/reversed/muted clips never cause
+        // audio track mismatches inside the video sequence; mix validated audio tracks cleanly below.
+        val seqBuilder = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_VIDEO))
         var cursorMs = 0L
         spans.forEach { span ->
             val clip = span.clip
@@ -276,7 +274,7 @@ class VideoExportManager(private val context: Context) {
                 context = context,
                 clip = clip,
                 clipStartInTimelineMs = span.startMs,
-                allClips = videoClipsForSeq,
+                allClips = if (compositedVideoClip != null) snapshot.clips else videoClipsForSeq,
                 transitions = transitions,
                 effectLayers = effectLayers,
                 overlays = overlays,
@@ -287,12 +285,9 @@ class VideoExportManager(private val context: Context) {
                 config = config,
             )
 
-            val trackMuted = snapshot.isVideoTrackMuted(clip.trackIndex) || snapshot.isVideoTrackHidden(clip.trackIndex)
-            val muteAudio = !includePrimaryVideoAudio || trackMuted || clip.isMuted ||
-                (clip.volumePercent <= 0 && clip.volumeKeyframes.isEmpty())
             val itemBuilder = EditedMediaItem.Builder(mediaBuilder.build())
-                .setRemoveAudio(muteAudio)
-                .setEffects(effects)
+                .setRemoveAudio(true)
+                .setEffects(androidx.media3.transformer.Effects(emptyList(), effects.videoEffects))
 
             if (clip.isFrozen) {
                 itemBuilder.setDurationUs(clip.freezeDurationMs * 1_000L)
@@ -328,55 +323,84 @@ class VideoExportManager(private val context: Context) {
 
         val sequences = mutableListOf(seqBuilder.build())
 
-        // Mix all unmuted video-track audio (when composited multi-track video is used) + A1/A2 AudioTrackItems
+        // Mix validated unmuted clip audio (strictly skipping reversed-without-reversed-audio / missing audio tracks)
+        // + A1/A2 AudioTrackItems, trimmed safely to totalVideoDurationMs so Audio == Video length.
         if (!config.removeAudio) {
-            if (compositedVideoClip != null) {
-                val clipAudioTracks = audioSourceClips
-                    .filter { clip ->
-                        !snapshot.isVideoTrackHidden(clip.trackIndex) &&
-                            !snapshot.isVideoTrackMuted(clip.trackIndex) &&
-                            !clip.isMuted &&
-                            !clip.isFrozen &&
-                            (clip.volumePercent > 0 || clip.volumeKeyframes.isNotEmpty())
-                    }
-                    .groupBy { it.trackIndex }
-
-                clipAudioTracks.values.forEach { clipsOnTrack ->
-                    val audioSeqBuilder = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
-                    var audioCursor = 0L
-                    var hasAdded = false
-                    clipsOnTrack.sortedBy { it.timelineStartMs }.forEach { clip ->
-                        val start = clip.timelineStartMs.coerceAtLeast(audioCursor)
-                        if (start > audioCursor + 30L) {
-                            audioSeqBuilder.addGap((start - audioCursor) * 1_000L)
-                        }
-                        val u = clip.effectiveUriString()?.let { runCatching { Uri.parse(it) }.getOrNull() }
-                            ?: sourceVideoUri
-                        val mb = MediaItem.Builder().setUri(u)
-                        val tStart = clip.effectiveTrimStartMs()
-                        val tEnd = clip.effectiveTrimEndMs()
-                        if (tStart > 30L || tEnd < clip.effectiveSourceDurationMs() - 30L) {
-                            mb.setClippingConfiguration(
-                                MediaItem.ClippingConfiguration.Builder()
-                                    .setStartPositionMs(tStart)
-                                    .setEndPositionMs(tEnd)
-                                    .build()
-                            )
-                        }
-                        val procs = mutableListOf<androidx.media3.common.audio.AudioProcessor>()
-                        if (clip.volumeKeyframes.isNotEmpty() || clip.volumePercent != 100) {
-                            procs.add(KeyframeVolumeAudioProcessor(clip.volumeKeyframes, clip.volumePercent))
-                        }
-                        val item = EditedMediaItem.Builder(mb.build())
-                            .setRemoveVideo(true)
-                            .setEffects(androidx.media3.transformer.Effects(procs, emptyList()))
-                            .build()
-                        audioSeqBuilder.addItem(item)
-                        audioCursor = start + clip.timelineDurationMs()
-                        hasAdded = true
-                    }
-                    if (hasAdded) sequences.add(audioSeqBuilder.build())
+            val clipAudioTracks = audioSourceClips
+                .filter { clip ->
+                    !snapshot.isVideoTrackHidden(clip.trackIndex) &&
+                        !snapshot.isVideoTrackMuted(clip.trackIndex) &&
+                        !clip.isMuted &&
+                        !clip.isFrozen &&
+                        (!clip.isReversed || clip.reverseAudio) &&
+                        clip.smoothReverseRole != com.example.data.model.SmoothReverseRole.REVERSED &&
+                        (clip.volumePercent > 0 || clip.volumeKeyframes.isNotEmpty())
                 }
+                .groupBy { it.trackIndex }
+
+            clipAudioTracks.values.forEach { clipsOnTrack ->
+                val audioSeqBuilder = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
+                var audioCursor = 0L
+                var hasAdded = false
+                clipsOnTrack.sortedBy { it.timelineStartMs }.forEach { clip ->
+                    val u = clip.effectiveUriString()?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                        ?: sourceVideoUri
+                    if (!hasAudioTrack(context, u)) return@forEach
+
+                    val rawStart = clip.timelineStartMs.coerceAtLeast(audioCursor)
+                    val rawEnd = rawStart + clip.timelineDurationMs()
+                    val clampedWin = clampAudioWindowToVideoDuration(rawStart, rawEnd, totalVideoDurationMs)
+                        ?: return@forEach
+                    val start = clampedWin.first
+                    val clampedTimelineDur = (clampedWin.second - start).coerceAtLeast(100L)
+
+                    if (start > audioCursor + 30L) {
+                        audioSeqBuilder.addGap((start - audioCursor) * 1_000L)
+                    }
+                    val tStart = clip.effectiveTrimStartMs()
+                    val fullSrcEnd = clip.effectiveTrimEndMs()
+                    val spd = clip.speed.effectiveSpeedMultiplier().coerceAtLeast(0.1f)
+                    val maxSrcSpan = if (clip.speed.mode == SpeedMode.NORMAL) {
+                        (clampedTimelineDur * spd).toLong().coerceAtLeast(100L)
+                    } else {
+                        (fullSrcEnd - tStart).coerceAtLeast(100L)
+                    }
+                    val tEnd = (tStart + maxSrcSpan).coerceAtMost(fullSrcEnd)
+                    val mb = MediaItem.Builder().setUri(u)
+                    if (tStart > 30L || tEnd < clip.effectiveSourceDurationMs() - 30L) {
+                        mb.setClippingConfiguration(
+                            MediaItem.ClippingConfiguration.Builder()
+                                .setStartPositionMs(tStart)
+                                .setEndPositionMs(tEnd)
+                                .build()
+                        )
+                    }
+                    val procs = mutableListOf<androidx.media3.common.audio.AudioProcessor>()
+                    if (clip.speed.changeAudioPitch && abs(spd - 1f) > 0.03f && clip.speed.mode == SpeedMode.NORMAL) {
+                        procs.add(
+                            androidx.media3.common.audio.SonicAudioProcessor().apply {
+                                setPitch(spd.coerceIn(0.45f, 2.2f))
+                            }
+                        )
+                    }
+                    if (clip.volumeKeyframes.isNotEmpty() || clip.volumePercent != 100) {
+                        procs.add(KeyframeVolumeAudioProcessor(clip.volumeKeyframes, clip.volumePercent))
+                    }
+                    val auItemBuilder = EditedMediaItem.Builder(mb.build())
+                        .setRemoveVideo(true)
+                        .setEffects(androidx.media3.transformer.Effects(procs, emptyList()))
+                    if (clip.speed.mode == SpeedMode.NORMAL && abs(spd - 1.0f) > 0.02f) {
+                        val clampedSpd = spd.coerceIn(0.1f, 8f)
+                        auItemBuilder.setSpeed(object : SpeedProvider {
+                            override fun getSpeed(presentationTimeUs: Long): Float = clampedSpd
+                            override fun getNextSpeedChangeTimeUs(inputTimeUs: Long): Long = C.TIME_UNSET
+                        })
+                    }
+                    audioSeqBuilder.addItem(auItemBuilder.build())
+                    audioCursor = clampedWin.second
+                    hasAdded = true
+                }
+                if (hasAdded) sequences.add(audioSeqBuilder.build())
             }
 
             // A1 (Music) & A2 (Sound / Voiceover)
@@ -390,12 +414,15 @@ class VideoExportManager(private val context: Context) {
                 }
                 .forEach { au ->
                     val uri = runCatching { Uri.parse(au.uriString) }.getOrNull() ?: return@forEach
+                    if (!hasAudioTrack(context, uri)) return@forEach
+                    val clampedWin = clampAudioWindowToVideoDuration(au.startMs, au.endMs, totalVideoDurationMs)
+                        ?: return@forEach
                     val auSeqBuilder = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
-                    if (au.startMs > 30L) {
-                        auSeqBuilder.addGap(au.startMs * 1_000L)
+                    if (clampedWin.first > 30L) {
+                        auSeqBuilder.addGap(clampedWin.first * 1_000L)
                     }
                     val clipStart = au.sourceStartMs.coerceAtLeast(0L)
-                    val clipEnd = clipStart + (au.endMs - au.startMs).coerceAtLeast(200L)
+                    val clipEnd = clipStart + (clampedWin.second - clampedWin.first).coerceAtLeast(100L)
                     val mb = MediaItem.Builder().setUri(uri)
                         .setClippingConfiguration(
                             MediaItem.ClippingConfiguration.Builder()
@@ -450,9 +477,30 @@ class VideoExportManager(private val context: Context) {
                     exportResult: ExportResult,
                     exportException: ExportException,
                 ) {
+                    Log.e(
+                        TAG,
+                        "Transformer export error (retriedVideoOnly=$retriedVideoOnly, removeAudio=${config.removeAudio}, code=${exportException.errorCodeName})",
+                        exportException,
+                    )
                     stopProgressPolling()
                     activeTransformer = null
                     tempFile.delete()
+                    if (!retriedVideoOnly && !config.removeAudio && !exportCancelled) {
+                        Log.w(TAG, "Retrying export as video-only H.264 MP4 after muxer/audio failure")
+                        launchTransformerComposition(
+                            sourceVideoUri = sourceVideoUri,
+                            snapshot = snapshot,
+                            compositedVideoClip = compositedVideoClip,
+                            audioSourceClips = audioSourceClips,
+                            config = config.copy(removeAudio = true, codec = ExportCodec.H264),
+                            progressMin = progressMin,
+                            onProgress = onProgress,
+                            onSuccess = onSuccess,
+                            onError = onError,
+                            retriedVideoOnly = true,
+                        )
+                        return
+                    }
                     onError(exportException.localizedMessage ?: "Hardware encoder export failed.")
                 }
             })
@@ -561,6 +609,41 @@ class VideoExportManager(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "VideoExportManager"
+
+        fun clampAudioWindowToVideoDuration(
+            startMs: Long,
+            endMs: Long,
+            totalVideoDurationMs: Long,
+        ): Pair<Long, Long>? {
+            val safeTotal = totalVideoDurationMs.coerceAtLeast(100L)
+            val s = startMs.coerceAtLeast(0L)
+            if (s >= safeTotal - 80L) return null
+            val e = endMs.coerceAtMost(safeTotal)
+            if (e - s < 80L) return null
+            return s to e
+        }
+
+        fun hasAudioTrack(context: Context, uri: Uri): Boolean {
+            val extractor = MediaExtractor()
+            return try {
+                extractor.setDataSource(context, uri, null)
+                var found = false
+                for (i in 0 until extractor.trackCount) {
+                    val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME).orEmpty()
+                    if (mime.startsWith("audio/")) {
+                        found = true
+                        break
+                    }
+                }
+                found
+            } catch (e: Exception) {
+                Log.w(TAG, "hasAudioTrack check failed for $uri", e)
+                false
+            } finally {
+                runCatching { extractor.release() }
+            }
+        }
         suspend fun readVideoMetadata(context: Context, uri: Uri): VideoMetadata =
             withContext(Dispatchers.IO) {
                 val displayName = queryDisplayName(context, uri) ?: "Selected_Clip.mp4"

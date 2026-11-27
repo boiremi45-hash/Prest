@@ -93,8 +93,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AdjustSettings
@@ -265,9 +267,12 @@ fun StudioScreen(
     onDuplicateEffect: (String) -> Unit,
     onSetEffectObjectTarget: (String, Boolean) -> Unit,
     onDeleteEffect: (String) -> Unit,
-    onEnableTimeslice: () -> Unit,
+    onApplyCapCutTimeslice: () -> Unit,
+    onApplyNodeTimeslice: () -> Unit,
     onUpdateTimeslice: (TimesliceSettings, Boolean) -> Unit,
-    onDeleteTimeslice: () -> Unit,
+    onToggleTimeslicePreview: () -> Unit,
+    onRemoveTimeslice: () -> Unit,
+    onSaveTimeslicePreset: () -> Unit,
     onUpdateTransition: (String, TransitionType, Float, Boolean) -> Unit,
     onUpdateAdjust: (AdjustSettings) -> Unit,
     onAutoAdjust: () -> Unit,
@@ -300,6 +305,7 @@ fun StudioScreen(
     onCancelExport: () -> Unit,
     onResetExportState: () -> Unit,
     onSaveCopyAs: (ExportRecord) -> Unit,
+    onShowToast: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -365,8 +371,18 @@ fun StudioScreen(
         (playheadMs - it.startMs).coerceIn(0L, (it.endMs - it.startMs).coerceAtLeast(1L))
     } ?: 0L
 
-    val isOnKeyframe = remember(activeClip.keyframes, localPlayheadMs, selectedTextTrack, selectedTextLocalMs, selectedKeyframeId) {
+    val isPlayheadOnSelectedTarget = remember(playheadMs, toolbarSpan, selectedTextTrack) {
         if (selectedTextTrack != null) {
+            playheadMs in selectedTextTrack.startMs..selectedTextTrack.endMs
+        } else {
+            playheadMs in toolbarSpan.startMs..toolbarSpan.endMs
+        }
+    }
+
+    val isOnKeyframe = remember(activeClip.keyframes, localPlayheadMs, selectedTextTrack, selectedTextLocalMs, selectedKeyframeId, isPlayheadOnSelectedTarget) {
+        if (!isPlayheadOnSelectedTarget) {
+            false
+        } else if (selectedTextTrack != null) {
             selectedTextTrack.keyframes.any { it.id == selectedKeyframeId || abs(it.timeMs - selectedTextLocalMs) < 140L }
         } else {
             activeClip.keyframes.any { it.id == selectedKeyframeId || abs(it.timeMs - localPlayheadMs) < 140L }
@@ -424,18 +440,36 @@ fun StudioScreen(
         v1Spans[activeSpanIdxForShader].startMs - exoCumulativeStarts.getOrElse(activeSpanIdxForShader) { 0L }
     } else 0L
 
+    // Respect Preview ON/OFF toggle for CapCut Timeslice (kept in snapshot for Export, hidden in Preview when OFF)
+    val hiddenCapCutEffectIds = remember(snapshot.clips) {
+        snapshot.clips.filter { it.timeslice.isCapCutModeActive() && !it.timeslice.previewEnabled }
+            .mapNotNull { it.timeslice.capcutEffectLayerId }.toSet()
+    }
+    val hiddenCapCutTransitionClipIds = remember(snapshot.clips) {
+        snapshot.clips.filter { it.timeslice.isCapCutModeActive() && !it.timeslice.previewEnabled }
+            .mapNotNull { it.timeslice.capcutTransitionAfterClipId }.toSet()
+    }
+    val previewEffectLayers = remember(snapshot.effectLayers, hiddenCapCutEffectIds) {
+        if (hiddenCapCutEffectIds.isEmpty()) snapshot.effectLayers
+        else snapshot.effectLayers.filterNot { it.id in hiddenCapCutEffectIds }
+    }
+    val previewTransitions = remember(snapshot.transitions, hiddenCapCutTransitionClipIds) {
+        if (hiddenCapCutTransitionClipIds.isEmpty()) snapshot.transitions
+        else snapshot.transitions.filterNot { it.afterClipId in hiddenCapCutTransitionClipIds }
+    }
+
     // Live mutable reference so OpenGL shader uniforms update at 60fps for V1
     val shaderParamsRef = remember { mutableStateOf(LunaShaderParams()) }
-    val transitionWindows = remember(v1Spans, snapshot.transitions) {
-        VideoEffectsEngine.buildTransitionWindows(v1Spans, snapshot.transitions)
+    val transitionWindows = remember(v1Spans, previewTransitions) {
+        VideoEffectsEngine.buildTransitionWindows(v1Spans, previewTransitions)
     }
-    LaunchedEffect(snapshot, previewClip, currentTimelineOffsetMs, bypassEffects) {
+    LaunchedEffect(snapshot, previewClip, currentTimelineOffsetMs, bypassEffects, previewEffectLayers, transitionWindows) {
         shaderParamsRef.value = VideoEffectsEngine.makeShaderParams(
             clip = previewClip,
             adjust = previewClip.adjust,
             filterPreset = snapshot.activePreset,
             filterIntensity = snapshot.filterIntensity,
-            effectLayers = snapshot.effectLayers,
+            effectLayers = previewEffectLayers,
             transitionWindows = transitionWindows,
             bypass = bypassEffects,
             timelineOffsetMs = currentTimelineOffsetMs,
@@ -443,10 +477,7 @@ fun StudioScreen(
     }
 
     val exoPlayer = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_OFF
-            setSeekParameters(SeekParameters.EXACT)
-        }
+        buildPreviewExoPlayer(context)
     }
     val audioPlayerA1 = remember(context) {
         ExoPlayer.Builder(context).build().apply {
@@ -502,11 +533,13 @@ fun StudioScreen(
         exoPlayer.playWhenReady = wasPlaying && findActiveSpanIndex(v1Spans, latestPlayheadMs) >= 0
     }
 
-    // Attach GPU Effects pipeline per V1 previewClip
+    // Attach GPU Effects pipeline once per structural LUT/stabilize configuration (avoids GL teardown stutter on split cuts)
     LaunchedEffect(
-        snapshot.activePreset,
+        selectedVideo?.uri,
+        bypassEffects,
+        snapshot.activePreset.id,
+        snapshot.activePreset.lutData,
         snapshot.filterIntensity,
-        previewClip.id,
         previewClip.adjust.rgbCurves,
         previewClip.adjust.hsl,
         previewClip.adjust.colorWheel,
@@ -517,19 +550,14 @@ fun StudioScreen(
         previewClip.adjust.brilliance,
         previewClip.adjust.fade,
         previewClip.stabilize,
-        previewClip.crop,
-        previewClip.cutFlashPunchOnStart,
-        previewClip.isReversed,
-        bypassEffects,
-        selectedVideo?.uri,
     ) {
         if (selectedVideo == null) return@LaunchedEffect
         val fx = VideoEffectsEngine.buildPreviewEffects(
             context = context,
             activeClip = previewClip,
             allClips = snapshot.clips,
-            transitions = snapshot.transitions,
-            effectLayers = snapshot.effectLayers,
+            transitions = previewTransitions,
+            effectLayers = previewEffectLayers,
             overlays = snapshot.overlays,
             texts = snapshot.textTracks,
             adjust = previewClip.adjust,
@@ -675,9 +703,16 @@ fun StudioScreen(
                 val activeSp = spList[activeIdx]
                 val activeSpanDur = (activeSp.endMs - activeSp.startMs).coerceAtLeast(1L)
                 if (exoPlayer.currentMediaItemIndex != activeIdx) {
-                    val maxLocalTimeline = (activeSpanDur - 25L).coerceAtLeast(0L)
-                    val localTimeline = (curPos - activeSp.startMs).coerceIn(0L, maxLocalTimeline)
-                    exoPlayer.seekTo(activeIdx, timelineToSourceMediaMs(activeSp.clip, localTimeline, activeSpanDur))
+                    val isSmoothGaplessBoundary = activeIdx > 0 &&
+                        exoPlayer.currentMediaItemIndex == activeIdx - 1 &&
+                        abs(activeSp.startMs - spList[activeIdx - 1].endMs) <= 40L &&
+                        (curPos - activeSp.startMs) < 120L &&
+                        exoPlayer.isPlaying
+                    if (!isSmoothGaplessBoundary) {
+                        val maxLocalTimeline = (activeSpanDur - 25L).coerceAtLeast(0L)
+                        val localTimeline = (curPos - activeSp.startMs).coerceIn(0L, maxLocalTimeline)
+                        exoPlayer.seekTo(activeIdx, timelineToSourceMediaMs(activeSp.clip, localTimeline, activeSpanDur))
+                    }
                 }
                 if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_ENDED) {
                     exoPlayer.play()
@@ -874,9 +909,8 @@ fun StudioScreen(
                         1f - (previewLocalMs / 55f)
                     } else 0f
                     val previewTimesliceActive = !bypassEffects &&
-                        previewClip.timeslice.enabled &&
-                        previewClip.timeslice.previewEnabled &&
-                        previewClip.timeslice.intensity > 0.01f
+                        previewClip.timeslice.isNodeModeActive() &&
+                        previewClip.timeslice.previewEnabled
                     val timeslicePool = remember { TimeslicePreviewFramePool() }
                     var timesliceCacheTick by remember { mutableIntStateOf(0) }
                     val effClipUri = remember(previewClip.id, previewClip.isReversed, previewClip.reversedUriString, selectedVideo?.uri) {
@@ -894,9 +928,13 @@ fun StudioScreen(
                         effTrimStart,
                         effTrimEnd,
                         warmCenterBucket,
-                        previewClip.timeslice.slices,
-                        previewClip.timeslice.direction,
-                        previewClip.timeslice.timeSpreadSec,
+                        projectFps,
+                        previewClip.timeslice.sliceCount,
+                        previewClip.timeslice.sliceAngleDeg,
+                        previewClip.timeslice.frameInterval,
+                        previewClip.timeslice.frameOffset,
+                        previewClip.timeslice.sliceFeather,
+                        previewClip.timeslice.animate,
                     ) {
                         if (previewTimesliceActive && effClipUri != null) {
                             val cacheKey = "${effClipUri}_${effTrimStart}_${effTrimEnd}"
@@ -908,6 +946,7 @@ fun StudioScreen(
                                 clipEndMs = effTrimEnd,
                                 centerTimeMs = currentSourceTimeMs,
                                 settings = previewClip.timeslice,
+                                fps = projectFps.toFloat(),
                                 onBatchDecoded = { timesliceCacheTick++ },
                             )
                         }
@@ -978,6 +1017,7 @@ fun StudioScreen(
                                         clipStartMs = effTrimStart,
                                         clipEndMs = effTrimEnd,
                                         settings = previewClip.timeslice,
+                                        fps = projectFps.toFloat(),
                                         fitMode = canvasFitMode,
                                         frameProvider = { reqMs -> timeslicePool.getNearestBitmap(reqMs) },
                                     )
@@ -1000,6 +1040,7 @@ fun StudioScreen(
                                 trackIndex = trackIdx,
                                 snapshot = snapshot,
                                 canvasFitMode = canvasFitMode,
+                                projectFps = projectFps,
                                 bypassEffects = bypassEffects,
                                 playheadMs = playheadMs,
                                 isPlaying = isPlaying,
@@ -1408,7 +1449,14 @@ fun StudioScreen(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(CircleShape)
-                    .clickable(onClick = onToggleKeyframe)
+                    .alpha(if (isPlayheadOnSelectedTarget) 1f else 0.4f)
+                    .clickable {
+                        if (isPlayheadOnSelectedTarget) {
+                            onToggleKeyframe()
+                        } else {
+                            onShowToast("Move playhead onto clip first")
+                        }
+                    }
                     .testTag("keyframe_diamond_button"),
                 contentAlignment = Alignment.Center,
             ) {
@@ -1526,7 +1574,10 @@ fun StudioScreen(
                 when {
                     selectedEffectId != null -> {
                         val selFxId = selectedEffectId
+                        val selFx = snapshot.effectLayers.firstOrNull { it.id == selFxId }
+                        val canSplitFx = selFx != null && StudioViewModel.canSplitAtPlayhead(playheadMs, selFx.startMs, selFx.endMs)
                         CapCutEffectSelectedBar(
+                            canSplit = canSplitFx,
                             onBack = { onSelectEffectLayer(null) },
                             onSplit = { onSplitEffect(selFxId) },
                             onAdjust = { activeSheet = ActiveEditorSheet.EFFECTS },
@@ -1538,7 +1589,10 @@ fun StudioScreen(
                     }
                     selectedTextId != null -> {
                         val selTxtId = selectedTextId
+                        val canSplitTxt = selectedTextTrack != null &&
+                            StudioViewModel.canSplitAtPlayhead(playheadMs, selectedTextTrack.startMs, selectedTextTrack.endMs)
                         CapCutTextSelectedBar(
+                            canSplit = canSplitTxt,
                             showGraphsButton = betweenKeyframesSeg != null,
                             onBack = { onSelectText(null) },
                             onAddText = {
@@ -1555,7 +1609,10 @@ fun StudioScreen(
                     }
                     selectedOverlayId != null -> {
                         val selOvId = selectedOverlayId
+                        val selOv = snapshot.overlays.firstOrNull { it.id == selOvId }
+                        val canSplitOv = selOv != null && StudioViewModel.canSplitAtPlayhead(playheadMs, selOv.startMs, selOv.endMs)
                         CapCutOverlaySelectedBar(
+                            canSplit = canSplitOv,
                             onBack = { onSelectOverlay(null) },
                             onOpenOverlayTools = { activeSheet = ActiveEditorSheet.OVERLAY },
                             onTransform = { activeSheet = ActiveEditorSheet.TRANSFORM },
@@ -1566,7 +1623,10 @@ fun StudioScreen(
                     }
                     selectedAudioId != null -> {
                         val selAuId = selectedAudioId
+                        val selAu = snapshot.audioTracks.firstOrNull { it.id == selAuId }
+                        val canSplitAu = selAu != null && StudioViewModel.canSplitAtPlayhead(playheadMs, selAu.startMs, selAu.endMs)
                         CapCutAudioSelectedBar(
+                            canSplit = canSplitAu,
                             onBack = { onSelectAudio(null) },
                             onVolume = { activeSheet = ActiveEditorSheet.AUDIO_VOLUME },
                             onSplit = { onSplitAudio(selAuId) },
@@ -1575,7 +1635,7 @@ fun StudioScreen(
                         )
                     }
                     selectedClipId != null -> {
-                        val canSplit = (localPlayheadMs >= 300L && activeClip.timelineDurationMs() - localPlayheadMs >= 300L)
+                        val canSplit = StudioViewModel.canSplitAtPlayhead(playheadMs, toolbarSpan.startMs, toolbarSpan.endMs)
                         CapCutClipSelectedBar(
                             clip = activeClip,
                             canSplit = canSplit,
@@ -1636,6 +1696,8 @@ fun StudioScreen(
                             keyframeCount = selText.keyframes.size,
                             isOnKeyframe = isOnKeyframe,
                             hasSelectedKeyframe = selectedKeyframeId != null && selText.keyframes.any { it.id == selectedKeyframeId },
+                            isPlayheadOnTarget = isPlayheadOnSelectedTarget,
+                            onOffClipAddKeyframeAttempt = { onShowToast("Move playhead onto clip first") },
                             onToggleKeyframeMode = onToggleKeyframeMode,
                             onAddKeyframe = onAddTransformKeyframe,
                             onDeleteKeyframe = onDeleteTransformKeyframe,
@@ -1710,10 +1772,12 @@ fun StudioScreen(
                             showOpacity = false,
                             keyframeModeEnabled = keyframeModeEnabled,
                             keyframeCount = activeClip.keyframes.size,
-                            isOnKeyframe = activeClip.keyframes.any {
+                            isOnKeyframe = isPlayheadOnSelectedTarget && activeClip.keyframes.any {
                                 it.id == selectedKeyframeId || abs(it.timeMs - localPlayheadMs) < 140L
                             },
                             hasSelectedKeyframe = selectedKeyframeId != null && activeClip.keyframes.any { it.id == selectedKeyframeId },
+                            isPlayheadOnTarget = isPlayheadOnSelectedTarget,
+                            onOffClipAddKeyframeAttempt = { onShowToast("Move playhead onto clip first") },
                             onToggleKeyframeMode = onToggleKeyframeMode,
                             onAddKeyframe = onAddTransformKeyframe,
                             onDeleteKeyframe = onDeleteTransformKeyframe,
@@ -1763,10 +1827,7 @@ fun StudioScreen(
                 activeEffects = snapshot.effectLayers,
                 selectedEffectId = selectedEffectId,
                 timesliceActive = activeClip.timeslice.enabled,
-                onOpenTimeslice = {
-                    onEnableTimeslice()
-                    activeSheet = ActiveEditorSheet.TIMESLICE
-                },
+                onOpenTimeslice = { activeSheet = ActiveEditorSheet.TIMESLICE },
                 onApplyEffect = onApplyEffect,
                 onClose = { activeSheet = ActiveEditorSheet.NONE },
             )
@@ -1865,10 +1926,12 @@ fun StudioScreen(
             )
             ActiveEditorSheet.TIMESLICE -> TimesliceToolSheet(
                 clip = activeClip,
-                canUndo = canUndo,
+                onApplyCapCutMode = onApplyCapCutTimeslice,
+                onApplyNodeMode = onApplyNodeTimeslice,
                 onUpdateTimeslice = onUpdateTimeslice,
-                onDeleteTimeslice = onDeleteTimeslice,
-                onUndo = onUndo,
+                onTogglePreview = onToggleTimeslicePreview,
+                onRemoveTimeslice = onRemoveTimeslice,
+                onSaveAsPreset = onSaveTimeslicePreset,
                 onClose = { activeSheet = ActiveEditorSheet.NONE },
             )
         }
@@ -1948,6 +2011,7 @@ private fun UpperVideoTrackPreviewLayer(
     trackIndex: Int,
     snapshot: TimelineSnapshot,
     canvasFitMode: CanvasFitMode,
+    projectFps: Int,
     bypassEffects: Boolean,
     playheadMs: Long,
     isPlaying: Boolean,
@@ -1981,28 +2045,42 @@ private fun UpperVideoTrackPreviewLayer(
         )
     }
 
-    val shaderParamsRef = remember { mutableStateOf(LunaShaderParams()) }
-    val transitionWindows = remember(trackSpans, snapshot.transitions) {
-        VideoEffectsEngine.buildTransitionWindows(trackSpans, snapshot.transitions)
+    val upperHiddenCapCutFxIds = remember(snapshot.clips) {
+        snapshot.clips.filter { it.timeslice.isCapCutModeActive() && !it.timeslice.previewEnabled }
+            .mapNotNull { it.timeslice.capcutEffectLayerId }.toSet()
     }
-    LaunchedEffect(snapshot, fallbackClip, bypassEffects) {
+    val upperHiddenCapCutTransIds = remember(snapshot.clips) {
+        snapshot.clips.filter { it.timeslice.isCapCutModeActive() && !it.timeslice.previewEnabled }
+            .mapNotNull { it.timeslice.capcutTransitionAfterClipId }.toSet()
+    }
+    val upperSharedEffects = remember(snapshot.effectLayers, upperHiddenCapCutFxIds) {
+        snapshot.effectLayers.filter { it.applyToAllVideos && it.id !in upperHiddenCapCutFxIds }
+    }
+    val upperVisibleTransitions = remember(snapshot.transitions, upperHiddenCapCutTransIds) {
+        if (upperHiddenCapCutTransIds.isEmpty()) snapshot.transitions
+        else snapshot.transitions.filterNot { it.afterClipId in upperHiddenCapCutTransIds }
+    }
+    val currentUpperOffsetMs = activeSpan?.startMs ?: trackSpans.firstOrNull()?.startMs ?: 0L
+
+    val shaderParamsRef = remember { mutableStateOf(LunaShaderParams()) }
+    val transitionWindows = remember(trackSpans, upperVisibleTransitions) {
+        VideoEffectsEngine.buildTransitionWindows(trackSpans, upperVisibleTransitions)
+    }
+    LaunchedEffect(snapshot, fallbackClip, bypassEffects, upperSharedEffects, transitionWindows, currentUpperOffsetMs) {
         shaderParamsRef.value = VideoEffectsEngine.makeShaderParams(
             clip = fallbackClip,
             adjust = fallbackClip.adjust,
             filterPreset = snapshot.activePreset,
             filterIntensity = snapshot.filterIntensity,
-            effectLayers = snapshot.effectLayers,
+            effectLayers = upperSharedEffects,
             transitionWindows = transitionWindows,
             bypass = bypassEffects,
-            timelineOffsetMs = 0L,
+            timelineOffsetMs = currentUpperOffsetMs,
         )
     }
 
     val upperPlayer = remember(context, trackIndex) {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_OFF
-            setSeekParameters(SeekParameters.EXACT)
-        }
+        buildPreviewExoPlayer(context)
     }
     DisposableEffect(upperPlayer) {
         onDispose { upperPlayer.release() }
@@ -2033,21 +2111,28 @@ private fun UpperVideoTrackPreviewLayer(
     }
 
     LaunchedEffect(
-        snapshot.activePreset,
-        snapshot.filterIntensity,
-        fallbackClip.id,
-        fallbackClip.adjust,
-        fallbackClip.stabilize,
-        fallbackClip.crop,
-        fallbackClip.isReversed,
+        trackIndex,
         bypassEffects,
+        snapshot.activePreset.id,
+        snapshot.activePreset.lutData,
+        snapshot.filterIntensity,
+        fallbackClip.adjust.rgbCurves,
+        fallbackClip.adjust.hsl,
+        fallbackClip.adjust.colorWheel,
+        fallbackClip.adjust.highlights,
+        fallbackClip.adjust.shadows,
+        fallbackClip.adjust.whites,
+        fallbackClip.adjust.blacks,
+        fallbackClip.adjust.brilliance,
+        fallbackClip.adjust.fade,
+        fallbackClip.stabilize,
     ) {
         val fx = VideoEffectsEngine.buildPreviewEffects(
             context = context,
             activeClip = fallbackClip,
             allClips = snapshot.clips,
-            transitions = snapshot.transitions,
-            effectLayers = snapshot.effectLayers,
+            transitions = upperVisibleTransitions,
+            effectLayers = upperSharedEffects,
             overlays = snapshot.overlays,
             texts = snapshot.textTracks,
             adjust = fallbackClip.adjust,
@@ -2073,6 +2158,13 @@ private fun UpperVideoTrackPreviewLayer(
             upperPlayer.playWhenReady = isPlaying
         } else {
             upperPlayer.playWhenReady = false
+            // Preload/seek upcoming upper-track clip ~550ms before playhead reaches it
+            val upcomingIdx = trackSpans.indexOfFirst {
+                it.startMs > playheadMs && (it.startMs - playheadMs) <= 550L
+            }
+            if (upcomingIdx in trackSpans.indices && upperPlayer.currentMediaItemIndex != upcomingIdx) {
+                upperPlayer.seekTo(upcomingIdx, 0L)
+            }
         }
     }
 
@@ -2112,9 +2204,8 @@ private fun UpperVideoTrackPreviewLayer(
             1f - (localMs / 55f)
         } else 0f
         val timesliceActive = !bypassEffects &&
-            fallbackClip.timeslice.enabled &&
-            fallbackClip.timeslice.previewEnabled &&
-            fallbackClip.timeslice.intensity > 0.01f
+            fallbackClip.timeslice.isNodeModeActive() &&
+            fallbackClip.timeslice.previewEnabled
         val timeslicePool = remember { TimeslicePreviewFramePool() }
         var timesliceCacheTick by remember { mutableIntStateOf(0) }
         val effUri = remember(fallbackClip.id, fallbackClip.isReversed, fallbackClip.reversedUriString) {
@@ -2132,9 +2223,13 @@ private fun UpperVideoTrackPreviewLayer(
             effStart,
             effEnd,
             warmBucket,
-            fallbackClip.timeslice.slices,
-            fallbackClip.timeslice.direction,
-            fallbackClip.timeslice.timeSpreadSec,
+            projectFps,
+            fallbackClip.timeslice.sliceCount,
+            fallbackClip.timeslice.sliceAngleDeg,
+            fallbackClip.timeslice.frameInterval,
+            fallbackClip.timeslice.frameOffset,
+            fallbackClip.timeslice.sliceFeather,
+            fallbackClip.timeslice.animate,
         ) {
             if (timesliceActive && effUri != null) {
                 timeslicePool.ensureWindowFrames(
@@ -2145,6 +2240,7 @@ private fun UpperVideoTrackPreviewLayer(
                     clipEndMs = effEnd,
                     centerTimeMs = currentSourceMs,
                     settings = fallbackClip.timeslice,
+                    fps = projectFps.toFloat(),
                     onBatchDecoded = { timesliceCacheTick++ },
                 )
             }
@@ -2208,6 +2304,7 @@ private fun UpperVideoTrackPreviewLayer(
                                 clipStartMs = effStart,
                                 clipEndMs = effEnd,
                                 settings = fallbackClip.timeslice,
+                                fps = projectFps.toFloat(),
                                 fitMode = canvasFitMode,
                                 frameProvider = { reqMs -> timeslicePool.getNearestBitmap(reqMs) },
                             )
@@ -2302,4 +2399,26 @@ private fun sourceMediaToTimelineMs(
 private fun formatShortTime(ms: Long): String {
     val sec = (ms.coerceAtLeast(0L) / 1000L)
     return String.format(Locale.US, "%02d:%02d", sec / 60L, sec % 60L)
+}
+
+@OptIn(UnstableApi::class)
+private fun buildPreviewExoPlayer(context: android.content.Context): ExoPlayer {
+    val trackSelector = DefaultTrackSelector(context).apply {
+        setParameters(
+            buildUponParameters()
+                .setMaxVideoSize(1280, 720)
+                .build()
+        )
+    }
+    val loadControl = DefaultLoadControl.Builder()
+        .setBufferDurationsMs(500, 4_000, 150, 250)
+        .build()
+    return ExoPlayer.Builder(context)
+        .setTrackSelector(trackSelector)
+        .setLoadControl(loadControl)
+        .build()
+        .apply {
+            repeatMode = Player.REPEAT_MODE_OFF
+            setSeekParameters(SeekParameters.EXACT)
+        }
 }

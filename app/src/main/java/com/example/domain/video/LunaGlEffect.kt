@@ -81,10 +81,45 @@ private class LunaShaderProgram(
     private var glProgram: GlProgram? = null
     private var width = 1
     private var height = 1
+    private var historyTexId = 0
+    private var historyW = 0
+    private var historyH = 0
+    private var hasHistory = false
+    private var lastPtsUs = Long.MIN_VALUE
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
         width = inputWidth.coerceAtLeast(1)
         height = inputHeight.coerceAtLeast(1)
+        if (historyTexId == 0 || historyW != width || historyH != height) {
+            if (historyTexId != 0) {
+                runCatching { GLES20.glDeleteTextures(1, intArrayOf(historyTexId), 0) }
+                historyTexId = 0
+            }
+            val ids = IntArray(1)
+            GLES20.glGenTextures(1, ids, 0)
+            historyTexId = ids[0]
+            if (historyTexId != 0) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, historyTexId)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexImage2D(
+                    GLES20.GL_TEXTURE_2D,
+                    0,
+                    GLES20.GL_RGBA,
+                    width,
+                    height,
+                    0,
+                    GLES20.GL_RGBA,
+                    GLES20.GL_UNSIGNED_BYTE,
+                    null,
+                )
+                historyW = width
+                historyH = height
+                hasHistory = false
+            }
+        }
         if (glProgram == null) {
             try {
                 glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER).apply {
@@ -182,9 +217,17 @@ private class LunaShaderProgram(
             cutFlashAmt = (1f - (timeMs / 55f)).coerceIn(0f, 1f)
         }
 
+        if (lastPtsUs == Long.MIN_VALUE || abs(presentationTimeUs - lastPtsUs) > 150_000L) {
+            hasHistory = false
+        }
+        lastPtsUs = presentationTimeUs
+
         try {
             program.use()
             program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+            val histTex = if (hasHistory && historyTexId != 0) historyTexId else inputTexId
+            program.setSamplerTexIdUniform("uHistorySampler", histTex, 1)
+            program.setFloatUniform("uHasHistory", if (hasHistory && historyTexId != 0) 1f else 0f)
             program.setFloatUniform("uTimeSec", tSec)
             program.setFloatsUniform("uTexelSize", floatArrayOf(1f / width, 1f / height))
 
@@ -217,6 +260,8 @@ private class LunaShaderProgram(
 
             program.setIntUniform("uEffectCode", activeFx?.type?.code ?: 0)
             program.setFloatUniform("uEffectIntensity", activeFx?.intensity ?: 0f)
+            program.setFloatUniform("uDelaySpeed", ((activeFx?.speed ?: 100f) / 100f).coerceIn(0f, 1f))
+            program.setFloatUniform("uDelayRotateRad", Math.toRadians((activeFx?.rotateDeg ?: 15f).toDouble()).toFloat())
 
             program.setIntUniform("uMaskCode", if (params.bypass) 0 else params.maskShape.code)
             program.setFloatUniform("uMaskScale", params.maskScale.coerceIn(0.15f, 1.4f))
@@ -233,6 +278,17 @@ private class LunaShaderProgram(
 
             program.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+            if (activeFx?.type?.code == 13 && historyTexId != 0) {
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, historyTexId)
+                GLES20.glCopyTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height)
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                hasHistory = true
+            } else {
+                hasHistory = false
+            }
+
             GlUtil.checkGlError()
         } catch (e: Exception) {
             throw VideoFrameProcessingException(e)
@@ -242,10 +298,15 @@ private class LunaShaderProgram(
     override fun release() {
         super.release()
         try {
+            if (historyTexId != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(historyTexId), 0)
+                historyTexId = 0
+            }
             glProgram?.delete()
         } catch (_: Exception) {
         }
         glProgram = null
+        hasHistory = false
     }
 
     private companion object {
@@ -261,6 +322,8 @@ void main() {
         const val FRAGMENT_SHADER = """
 precision mediump float;
 uniform sampler2D uTexSampler;
+uniform sampler2D uHistorySampler;
+uniform float uHasHistory;
 uniform float uTimeSec;
 uniform vec2 uTexelSize;
 uniform float uBypass;
@@ -279,6 +342,8 @@ uniform float uOpacity;
 
 uniform int uEffectCode;
 uniform float uEffectIntensity;
+uniform float uDelaySpeed;
+uniform float uDelayRotateRad;
 
 uniform int uMaskCode;
 uniform float uMaskScale;
@@ -344,9 +409,12 @@ void main() {
         sampleUv.x += uTransProg * 0.05 * sin(uv.y * 120.0 + uTimeSec * 30.0);
     } else if (uTransCode == 7) { // Pulse Fade
         sampleUv = (sampleUv - 0.5) * (1.0 - uTransProg * 0.22) + 0.5;
+    } else if (uTransCode == 8) { // Stretch Left (directional whip left)
+        float stretch = uTransProg * 0.42;
+        sampleUv.x = clamp((sampleUv.x + stretch * 0.65) / (1.0 + stretch * 0.35), 0.001, 0.999);
     }
 
-    // 3. VFX Coordinate transforms (Matrix Panels=1, Photo Strip=6, Tracking Glitch=12, Retro Rays=9)
+    // 3. VFX Coordinate transforms (Matrix Panels=1, Photo Strip=6, Tracking Glitch=12)
     float fxI = clamp(uEffectIntensity, 0.0, 1.0);
     if (uEffectCode == 1) { // Matrix Panels (3x3 tile + subtle parallax)
         float tileMix = step(0.15, fxI);
@@ -449,6 +517,26 @@ void main() {
         float rC = texture2D(uTexSampler, clamp(sampleUv + vec2(0.015 * fxI, 0.0), 0.001, 0.999)).r;
         float bC = texture2D(uTexSampler, clamp(sampleUv - vec2(0.015 * fxI, 0.0), 0.001, 0.999)).b;
         color = vec3(rC, color.g, bC);
+    } else if (uEffectCode == 13 && fxI > 0.01) { // Delay Glitch (CapCut Ghost / Trailing / Echo)
+        float spd = 1.0 + uDelaySpeed * 14.0;
+        float osc = sin(uTimeSec * spd);
+        vec2 c = sampleUv - 0.5;
+        float ang = uDelayRotateRad * (0.35 + 0.65 * osc) * fxI;
+        float ca = cos(ang);
+        float sa = sin(ang);
+        vec2 rotUv = vec2(c.x * ca - c.y * sa, c.x * sa + c.y * ca) * (1.0 - 0.03 * fxI) + 0.5;
+        vec2 trailUv = clamp(rotUv + vec2(0.018 * osc * fxI, 0.0), 0.001, 0.999);
+        vec2 echoUv = clamp(sampleUv - vec2(0.024 * fxI, 0.006 * osc * fxI), 0.001, 0.999);
+        vec3 echoSpatial = vec3(
+            texture2D(uTexSampler, clamp(trailUv + vec2(0.012 * fxI, 0.0), 0.001, 0.999)).r,
+            texture2D(uTexSampler, trailUv).g,
+            texture2D(uTexSampler, clamp(echoUv - vec2(0.012 * fxI, 0.0), 0.001, 0.999)).b
+        );
+        vec3 histEcho = (uHasHistory > 0.5)
+            ? texture2D(uHistorySampler, clamp(mix(sampleUv, rotUv, 0.55), 0.001, 0.999)).rgb
+            : echoSpatial;
+        vec3 ghostTrail = mix(echoSpatial, histEcho, 0.62 * uHasHistory);
+        color = mix(color, max(color, ghostTrail) * 0.52 + ghostTrail * 0.54, fxI * 0.72);
     }
 
     // 7. Standard Color Adjustments
@@ -507,6 +595,13 @@ void main() {
         color += vec3(1.0, 0.95, 0.80) * sp * uTransProg * 1.4;
     } else if (uTransCode == 7) { // Pulse Fade
         color *= (1.0 - uTransProg * 0.85);
+    } else if (uTransCode == 8) { // Stretch Left directional motion smear
+        float blurW = uTransProg * 0.075;
+        vec3 sm = color;
+        sm += texture2D(uTexSampler, clamp(sampleUv + vec2(blurW * 0.5, 0.0), 0.001, 0.999)).rgb;
+        sm += texture2D(uTexSampler, clamp(sampleUv + vec2(blurW, 0.0), 0.001, 0.999)).rgb;
+        sm += texture2D(uTexSampler, clamp(sampleUv + vec2(blurW * 1.5, 0.0), 0.001, 0.999)).rgb;
+        color = mix(color, sm * 0.25, uTransProg * 0.85);
     }
 
     // 10b. Crisp 0.05s white flash for back-to-back short reversed clips

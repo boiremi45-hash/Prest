@@ -63,6 +63,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -676,6 +677,8 @@ fun TransformToolSheet(
     keyframeCount: Int,
     isOnKeyframe: Boolean,
     hasSelectedKeyframe: Boolean,
+    isPlayheadOnTarget: Boolean = true,
+    onOffClipAddKeyframeAttempt: () -> Unit = {},
     onToggleKeyframeMode: () -> Unit,
     onAddKeyframe: () -> Unit,
     onDeleteKeyframe: () -> Unit,
@@ -771,11 +774,16 @@ fun TransformToolSheet(
                 )
                 if (keyframeModeEnabled || keyframeCount > 0) {
                     OutlinedButton(
-                        onClick = onAddKeyframe,
+                        onClick = {
+                            if (isPlayheadOnTarget) onAddKeyframe() else onOffClipAddKeyframeAttempt()
+                        },
                         enabled = keyframeModeEnabled,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = CyberCyan),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(32.dp).testTag("transform_add_keyframe"),
+                        modifier = Modifier
+                            .height(32.dp)
+                            .alpha(if (isPlayheadOnTarget) 1f else 0.4f)
+                            .testTag("transform_add_keyframe"),
                     ) {
                         Icon(Icons.Filled.Add, null, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))

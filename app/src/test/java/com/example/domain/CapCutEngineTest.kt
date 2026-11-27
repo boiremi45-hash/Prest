@@ -551,82 +551,126 @@ class CapCutEngineTest {
     }
 
     @Test
-    fun timesliceSettings_samplesDirectionalTimeSpreadAndClampsToClipEnd() {
-        val ts = com.example.data.model.TimesliceSettings(
-            enabled = true,
-            slices = 10,
-            direction = com.example.data.model.TimesliceDirection.LEFT_TO_RIGHT,
-            timeSpreadSec = 0.1f,
-            feather = 25f,
-            intensity = 1.0f,
-        )
-        assertEquals(0L, ts.sampleTimeMs(0L, 0, 0L, 3_000L))
-        assertEquals(100L, ts.sampleTimeMs(0L, 1, 0L, 3_000L))
-        assertEquals(200L, ts.sampleTimeMs(0L, 2, 0L, 3_000L))
-        assertEquals(900L, ts.sampleTimeMs(0L, 9, 0L, 3_000L))
-        assertTrue(ts.isHorizontalSlices())
+    fun timesliceNodeMode_viralDefaultsAnimateAndLegacyMigration() {
+        val viral = com.example.data.model.TimesliceSettings.viralNodePreset()
+        assertTrue(viral.isNodeModeActive())
+        assertTrue(!viral.isCapCutModeActive())
+        assertEquals(5, viral.clampedSliceCount())
+        assertEquals(0f, viral.clampedAngleDeg(), 0.01f)
+        assertEquals(2, viral.clampedFrameInterval())
+        assertEquals(25, viral.clampedFrameOffset())
+        assertEquals(0.50f, viral.clampedFeather(), 0.001f)
+        assertTrue(!viral.animate)
 
-        // Past clip end -> clamps strictly to last frame (clipEndMs)
-        val spread03 = ts.copy(timeSpreadSec = 0.3f)
-        assertEquals(2_000L, spread03.sampleTimeMs(2_000L, 0, 0L, 3_000L))
-        assertEquals(2_900L, spread03.sampleTimeMs(2_000L, 3, 0L, 3_000L))
-        assertEquals(3_000L, spread03.sampleTimeMs(2_000L, 4, 0L, 3_000L))
-        assertEquals(3_000L, spread03.sampleTimeMs(2_000L, 9, 0L, 3_000L))
+        // Frame time formula: T + (i * FrameInterval + FrameOffset) * frameDurationMs at 30fps
+        val fps = 30f
+        val frameMs = 1000f / fps
+        val t0 = viral.sampleNodeTimeMs(0L, 0, 0L, 4_000L, fps)
+        val t1 = viral.sampleNodeTimeMs(0L, 1, 0L, 4_000L, fps)
+        val t4 = viral.sampleNodeTimeMs(0L, 4, 0L, 4_000L, fps)
+        assertEquals((25f * frameMs).toLong(), t0)
+        assertEquals(((2f + 25f) * frameMs).toLong(), t1)
+        assertEquals(((8f + 25f) * frameMs).toLong(), t4)
+        assertTrue(t4 > t1 && t1 > t0)
 
-        // Right-to-Left flips visual slice order cleanly
-        val rtl = ts.copy(direction = com.example.data.model.TimesliceDirection.RIGHT_TO_LEFT)
-        assertEquals(900L, rtl.sampleTimeMs(0L, 0, 0L, 3_000L))
-        assertEquals(0L, rtl.sampleTimeMs(0L, 9, 0L, 3_000L))
-        assertTrue(rtl.isHorizontalSlices())
+        // Animate = true increases effective offset over elapsed playback time
+        val animated = viral.copy(animate = true)
+        assertTrue(animated.effectiveOffsetFrames(1_000L, fps) > animated.effectiveOffsetFrames(0L, fps))
 
-        // Top-to-Bottom & Bottom-to-Top switch slice axis to vertical slices
-        val btt = ts.copy(direction = com.example.data.model.TimesliceDirection.BOTTOM_TO_TOP)
-        assertTrue(!btt.isHorizontalSlices())
-        assertEquals(900L, btt.sampleTimeMs(0L, 0, 0L, 3_000L))
-        assertEquals(0L, btt.sampleTimeMs(0L, 9, 0L, 3_000L))
-
-        // Slice count clamps cleanly within 3..30
-        assertEquals(3, ts.copy(slices = 1).clampedSlices())
-        assertEquals(30, ts.copy(slices = 50).clampedSlices())
+        // Legacy saved project JSON containing old Timeslice fields migrates cleanly to Node Mode (5, 0, 2, 25, 0.50)
+        val legacyJson = """
+            {
+              "projectId": "legacy-ts",
+              "title": "Old Project",
+              "snapshot": {
+                "clips": [
+                  {
+                    "id": "clip-1",
+                    "timeslice": {
+                      "enabled": true,
+                      "slices": 10,
+                      "direction": "LEFT_TO_RIGHT",
+                      "timeSpreadSec": 0.3,
+                      "feather": 25.0,
+                      "intensity": 1.0,
+                      "previewEnabled": true
+                    }
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val migrated = json.decodeFromString(com.example.data.model.PersistedProjectState.serializer(), legacyJson)
+        val migratedTs = migrated.snapshot.clips.first().timeslice
+        assertTrue(migratedTs.isNodeModeActive())
+        assertEquals(5, migratedTs.clampedSliceCount())
+        assertEquals(0f, migratedTs.clampedAngleDeg(), 0.01f)
+        assertEquals(2, migratedTs.clampedFrameInterval())
+        assertEquals(25, migratedTs.clampedFrameOffset())
+        assertEquals(0.50f, migratedTs.clampedFeather(), 0.001f)
     }
 
     @Test
-    fun timesliceSettings_persistsPerClipAndIsolatesSplitParts() {
-        val part1 = VideoClipSegment(id = "p1", timelineStartMs = 0L, trimStartMs = 0L, trimEndMs = 3_000L, sourceDurationMs = 6_000L)
-        val part2 = VideoClipSegment(
-            id = "p2",
-            timelineStartMs = 3_000L,
-            trimStartMs = 3_000L,
-            trimEndMs = 6_000L,
+    fun timesliceCapCutMode_delayGlitchAndStretchLeftPersistCleanly() {
+        val clip1 = VideoClipSegment(
+            id = "c1",
+            timelineStartMs = 0L,
+            trimStartMs = 0L,
+            trimEndMs = 3_000L,
             sourceDurationMs = 6_000L,
             timeslice = com.example.data.model.TimesliceSettings(
                 enabled = true,
-                slices = 14,
-                direction = com.example.data.model.TimesliceDirection.TOP_TO_BOTTOM,
-                timeSpreadSec = 0.45f,
-                feather = 40f,
-                intensity = 0.85f,
-                previewEnabled = true,
+                mode = com.example.data.model.TimesliceMode.CAPCUT,
+                capcutAmount = 100f,
+                capcutSpeed = 100f,
+                capcutRotateDeg = 15f,
+                capcutStretchDurationSec = 0.4f,
+                capcutApplyToAllVideos = true,
+                capcutEffectLayerId = "fx-delay",
+                capcutTransitionAfterClipId = "c1",
             ),
         )
-        assertTrue(!part1.timeslice.enabled)
-        assertTrue(part2.timeslice.enabled)
-
-        val state = com.example.data.model.PersistedProjectState(
-            projectId = "ts-proj",
-            title = "Timeslice Edit",
-            snapshot = com.example.data.model.TimelineSnapshot(clips = listOf(part1, part2)),
+        val delayFx = com.example.data.model.VideoEffectLayer(
+            id = "fx-delay",
+            type = com.example.data.model.CapCutEffectType.DELAY_GLITCH,
+            intensity = 1f,
+            startMs = 2_350L,
+            endMs = 3_650L,
+            applyToAllVideos = true,
+            speed = 100f,
+            rotateDeg = 15f,
         )
-        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val stretchTrans = com.example.data.model.TransitionSpec(
+            afterClipId = "c1",
+            type = com.example.data.model.TransitionType.STRETCH_LEFT,
+            durationSec = 0.4f,
+        )
+        val state = com.example.data.model.PersistedProjectState(
+            projectId = "ts-capcut",
+            title = "CapCut Ghost Edit",
+            snapshot = com.example.data.model.TimelineSnapshot(
+                clips = listOf(clip1),
+                effectLayers = listOf(delayFx),
+                transitions = listOf(stretchTrans),
+            ),
+        )
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
         val encoded = json.encodeToString(com.example.data.model.PersistedProjectState.serializer(), state)
         val decoded = json.decodeFromString(com.example.data.model.PersistedProjectState.serializer(), encoded)
-        assertTrue(!decoded.snapshot.clips[0].timeslice.enabled)
-        assertTrue(decoded.snapshot.clips[1].timeslice.enabled)
-        assertEquals(14, decoded.snapshot.clips[1].timeslice.slices)
-        assertEquals(com.example.data.model.TimesliceDirection.TOP_TO_BOTTOM, decoded.snapshot.clips[1].timeslice.direction)
-        assertEquals(0.45f, decoded.snapshot.clips[1].timeslice.timeSpreadSec, 0.001f)
-        assertEquals(40f, decoded.snapshot.clips[1].timeslice.feather, 0.01f)
-        assertEquals(0.85f, decoded.snapshot.clips[1].timeslice.intensity, 0.001f)
+
+        val dClip = decoded.snapshot.clips.first()
+        assertTrue(dClip.timeslice.isCapCutModeActive())
+        assertTrue(!dClip.timeslice.isNodeModeActive())
+        assertEquals(100f, dClip.timeslice.capcutAmount, 0.01f)
+        assertEquals(100f, dClip.timeslice.capcutSpeed, 0.01f)
+        assertEquals(15f, dClip.timeslice.capcutRotateDeg, 0.01f)
+        assertEquals(0.4f, dClip.timeslice.capcutStretchDurationSec, 0.001f)
+        assertTrue(dClip.timeslice.capcutApplyToAllVideos)
+        assertEquals(com.example.data.model.CapCutEffectType.DELAY_GLITCH, decoded.snapshot.effectLayers.first().type)
+        assertTrue(decoded.snapshot.effectLayers.first().applyToAllVideos)
+        assertEquals(com.example.data.model.TransitionType.STRETCH_LEFT, decoded.snapshot.transitions.first().type)
+        assertEquals(0.4f, decoded.snapshot.transitions.first().durationSec, 0.001f)
     }
 
     @Test
@@ -704,4 +748,77 @@ class CapCutEngineTest {
         assertEquals(0, dSnap.audioTracks[0].trackIndex)
         assertEquals(1, dSnap.audioTracks[1].trackIndex)
     }
+
+    @Test
+    fun reversePcmAlignment_trimsAndPadsSilenceToMatchExactVideoDuration() {
+        // 48kHz stereo 16-bit PCM = 48_000 * 4 bytes per second = 192_000 bytes/sec; 500ms = 96_000 bytes
+        val shortPcm = ByteArray(48_000) { 0x2A } // 250ms
+        val padded = com.example.domain.video.VideoReverseProcessor.alignPcmToExactDuration(
+            pcmBytes = shortPcm,
+            sampleRate = 48_000,
+            channelCount = 2,
+            targetDurationMs = 500L,
+        )
+        assertEquals(96_000, padded.size)
+        assertEquals(0x2A.toByte(), padded[0])
+        assertEquals(0x2A.toByte(), padded[47_999])
+        assertEquals(0.toByte(), padded[48_000])
+        assertEquals(0.toByte(), padded[95_999])
+
+        val longPcm = ByteArray(144_000) { 0x15 } // 750ms
+        val trimmed = com.example.domain.video.VideoReverseProcessor.alignPcmToExactDuration(
+            pcmBytes = longPcm,
+            sampleRate = 48_000,
+            channelCount = 2,
+            targetDurationMs = 500L,
+        )
+        assertEquals(96_000, trimmed.size)
+        assertEquals(0x15.toByte(), trimmed[95_999])
+    }
+
+    @Test
+    fun exportAudioWindowClamping_enforcesVideoDurationBounds() {
+        val clamped = com.example.domain.video.VideoExportManager.clampAudioWindowToVideoDuration(
+            startMs = 400L,
+            endMs = 2_500L,
+            totalVideoDurationMs = 1_000L,
+        )
+        assertEquals(400L to 1_000L, clamped)
+
+        val dropped = com.example.domain.video.VideoExportManager.clampAudioWindowToVideoDuration(
+            startMs = 1_000L,
+            endMs = 2_000L,
+            totalVideoDurationMs = 1_000L,
+        )
+        assertEquals(null, dropped)
+
+        val tooShort = com.example.domain.video.VideoExportManager.clampAudioWindowToVideoDuration(
+            startMs = 990L,
+            endMs = 1_500L,
+            totalVideoDurationMs = 1_000L,
+        )
+        assertEquals(null, tooShort)
+    }
+
+    @Test
+    fun playheadStrictSplitAndKeyframeGuards_enforcePlayheadOnTarget() {
+        // Clip spans 2000ms..6000ms
+        assertTrue(!com.example.ui.studio.StudioViewModel.isPlayheadInsideRange(1_999L, 2_000L, 6_000L))
+        assertTrue(com.example.ui.studio.StudioViewModel.isPlayheadInsideRange(2_000L, 2_000L, 6_000L))
+        assertTrue(com.example.ui.studio.StudioViewModel.isPlayheadInsideRange(6_000L, 2_000L, 6_000L))
+        assertTrue(!com.example.ui.studio.StudioViewModel.isPlayheadInsideRange(6_001L, 2_000L, 6_000L))
+
+        // Split requires at least 200ms on both left and right halves
+        assertTrue(!com.example.ui.studio.StudioViewModel.canSplitAtPlayhead(1_500L, 2_000L, 6_000L))
+        assertTrue(!com.example.ui.studio.StudioViewModel.canSplitAtPlayhead(2_100L, 2_000L, 6_000L))
+        assertTrue(com.example.ui.studio.StudioViewModel.canSplitAtPlayhead(2_200L, 2_000L, 6_000L))
+        assertTrue(com.example.ui.studio.StudioViewModel.canSplitAtPlayhead(5_800L, 2_000L, 6_000L))
+        assertTrue(!com.example.ui.studio.StudioViewModel.canSplitAtPlayhead(5_900L, 2_000L, 6_000L))
+        assertTrue(!com.example.ui.studio.StudioViewModel.canSplitAtPlayhead(7_000L, 2_000L, 6_000L))
+
+        assertEquals("00:00", com.example.ui.studio.StudioViewModel.formatSplitTimeMs(0L))
+        assertEquals("00:05", com.example.ui.studio.StudioViewModel.formatSplitTimeMs(5_400L))
+        assertEquals("01:05", com.example.ui.studio.StudioViewModel.formatSplitTimeMs(65_000L))
+    }
 }
+

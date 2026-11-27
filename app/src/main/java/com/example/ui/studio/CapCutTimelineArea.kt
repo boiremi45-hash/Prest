@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -365,68 +366,77 @@ fun CapCutTimelineArea(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 // TEXT header cell
-                TrackControlHeaderCell(
-                    config = textCfg,
-                    rowHeightDp = textTotalHeightDp,
-                    accentColor = Color(0xFFEA580C),
-                    showMute = false,
-                    onToggleHidden = { onToggleTrackHidden(textCfg.id) },
-                    onToggleLocked = { onToggleTrackLocked(textCfg.id) },
-                    onToggleMuted = {},
-                    onResizeHeightDp = { h -> onResizeTrackHeight(textCfg.id, h) },
-                )
+                key(textCfg.id) {
+                    TrackControlHeaderCell(
+                        config = textCfg,
+                        rowHeightDp = textTotalHeightDp,
+                        accentColor = Color(0xFFEA580C),
+                        showMute = false,
+                        onToggleHidden = { onToggleTrackHidden(textCfg.id) },
+                        onToggleLocked = { onToggleTrackLocked(textCfg.id) },
+                        onToggleMuted = {},
+                        onResizeHeightDp = { h -> onResizeTrackHeight(textCfg.id, h) },
+                    )
+                }
 
                 // VIDEO tracks headers (V3 -> V2 -> V1)
                 videoTrackEntries.forEach { (trackIdx, cfg, lanes) ->
-                    val laneHeightDp = cfg.heightDp.coerceIn(34f, 120f).dp
-                    val rowHeightDp = laneHeightDp * lanes.size
-                    val hasSelectedOnTrack = lanes.any { l -> l.any { it.clip.id == selectedClipId } }
-                    TrackControlHeaderCell(
-                        config = cfg,
-                        rowHeightDp = rowHeightDp,
-                        accentColor = if (hasSelectedOnTrack || trackIdx == 0) CyberCyan else Color.White,
-                        showMute = true,
-                        onToggleHidden = { onToggleTrackHidden(cfg.id) },
-                        onToggleLocked = { onToggleTrackLocked(cfg.id) },
-                        onToggleMuted = { onToggleTrackMuted(cfg.id) },
-                        onResizeHeightDp = { h -> onResizeTrackHeight(cfg.id, h) },
-                    )
+                    key(cfg.id) {
+                        val laneHeightDp = cfg.heightDp.coerceIn(34f, 120f).dp
+                        val rowHeightDp = laneHeightDp * lanes.size
+                        val hasSelectedOnTrack = lanes.any { l -> l.any { it.clip.id == selectedClipId } }
+                        TrackControlHeaderCell(
+                            config = cfg,
+                            rowHeightDp = rowHeightDp,
+                            accentColor = if (hasSelectedOnTrack || trackIdx == 0) CyberCyan else Color.White,
+                            showMute = true,
+                            onToggleHidden = { onToggleTrackHidden(cfg.id) },
+                            onToggleLocked = { onToggleTrackLocked(cfg.id) },
+                            onToggleMuted = { onToggleTrackMuted(cfg.id) },
+                            onResizeHeightDp = { h -> onResizeTrackHeight(cfg.id, h) },
+                        )
+                    }
                 }
 
                 if (overlayLanes.isNotEmpty() || effectLanes.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                 }
                 overlayLanes.forEachIndexed { idx, _ ->
-                    CompactAuxiliaryTrackHeader(label = "OV${idx + 1}", accentColor = ElectricViolet)
+                    key("hdr_ov_$idx") {
+                        CompactAuxiliaryTrackHeader(label = "OV${idx + 1}", accentColor = ElectricViolet)
+                    }
                 }
                 effectLanes.forEachIndexed { idx, _ ->
-                    CompactAuxiliaryTrackHeader(label = "FX${idx + 1}", accentColor = Color(0xFF7C3AED))
+                    key("hdr_fx_$idx") {
+                        CompactAuxiliaryTrackHeader(label = "FX${idx + 1}", accentColor = Color(0xFF7C3AED))
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
 
                 // AUDIO tracks headers (A1, A2)
                 audioTrackEntries.forEach { (_, cfg, lanes) ->
-                    val laneHeightDp = cfg.heightDp.coerceIn(30f, 100f).dp
-                    val rowHeightDp = laneHeightDp * maxOf(1, lanes.size)
-                    TrackControlHeaderCell(
-                        config = cfg,
-                        rowHeightDp = rowHeightDp,
-                        accentColor = LunaMint,
-                        showMute = true,
-                        onToggleHidden = { onToggleTrackHidden(cfg.id) },
-                        onToggleLocked = { onToggleTrackLocked(cfg.id) },
-                        onToggleMuted = { onToggleTrackMuted(cfg.id) },
-                        onResizeHeightDp = { h -> onResizeTrackHeight(cfg.id, h) },
-                    )
+                    key(cfg.id) {
+                        val laneHeightDp = cfg.heightDp.coerceIn(30f, 100f).dp
+                        val rowHeightDp = laneHeightDp * maxOf(1, lanes.size)
+                        TrackControlHeaderCell(
+                            config = cfg,
+                            rowHeightDp = rowHeightDp,
+                            accentColor = LunaMint,
+                            showMute = true,
+                            onToggleHidden = { onToggleTrackHidden(cfg.id) },
+                            onToggleLocked = { onToggleTrackLocked(cfg.id) },
+                            onToggleMuted = { onToggleTrackMuted(cfg.id) },
+                            onResizeHeightDp = { h -> onResizeTrackHeight(cfg.id, h) },
+                        )
+                    }
                 }
             }
 
-            // RIGHT HORIZONTALLY SCROLLABLE MULTI-TRACK TIMELINE VIEWPORT + CENTERED PLAYHEAD
+            // RIGHT HORIZONTALLY SCROLLABLE MULTI-TRACK TIMELINE VIEWPORT
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight()
                     // 2-finger pinch zoom intercepted on Initial pass so horizontalScroll doesn't fight pinch
                     .pointerInput(Unit) {
                         awaitEachGesture {
@@ -467,6 +477,7 @@ fun CapCutTimelineArea(
                         modifier = Modifier
                             .width(scrollableWidthDp)
                             .height(RULER_HEIGHT)
+                            .clipToBounds()
                             .background(ObsidianBackground),
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -499,76 +510,81 @@ fun CapCutTimelineArea(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     // 2. TEXT / Sticker Track (on top of all video tracks)
-                    Box(
-                        modifier = Modifier
-                            .width(scrollableWidthDp)
-                            .height(textTotalHeightDp)
-                            .alpha(if (textCfg.isHidden) 0.35f else 1f)
-                            .background(ObsidianSurfaceContainer.copy(alpha = 0.22f)),
-                    ) {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            if (textLanes.isEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(scrollableWidthDp)
-                                        .height(textLaneDp),
-                                    contentAlignment = Alignment.CenterStart,
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .offset { IntOffset(maxOf(halfViewportPx.roundToInt(), hScrollState.value + 16), 0) }
-                                            .height((textLaneDp - 8.dp).coerceAtLeast(22.dp))
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .background(ObsidianSurfaceContainer)
-                                            .clickable {
-                                                if (!textCfg.isLocked) onOpenSheet(ActiveEditorSheet.TEXT)
-                                            }
-                                            .padding(horizontal = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Icon(Icons.Filled.TextFields, null, tint = Color(0xFFEA580C), modifier = Modifier.size(13.dp))
-                                        Spacer(modifier = Modifier.width(5.dp))
-                                        Text("+ Add text", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = TextSecondary)
-                                    }
-                                }
-                            } else {
-                                textLanes.forEachIndexed { laneIdx, laneItems ->
-                                    TimelineTrackLaneRow(
-                                        items = laneItems,
-                                        itemId = { it.id },
-                                        startMsOf = { it.startMs },
-                                        endMsOf = { it.endMs },
-                                        labelOf = { it.text },
-                                        pxPerSec = pxPerSec,
-                                        baseOffsetPx = halfViewportPx,
-                                        scrollableWidthDp = scrollableWidthDp,
-                                        rowHeightDp = textLaneDp,
-                                        containerColor = Color(0xFFEA580C),
-                                        contentColor = Color.White,
-                                        icon = Icons.Filled.TextFields,
-                                        selectedId = selectedTextId,
-                                        isLocked = textCfg.isLocked,
-                                        rowTagPrefix = "timeline_text_${laneIdx}",
-                                        keyframeTimesAndIds = { tx -> tx.keyframes.map { it.id to it.timeMs } },
-                                        selectedKfId = selectedKeyframeId,
-                                        diamondColor = CyberCyan,
-                                        onSelectKeyframe = onSelectTextKeyframe,
-                                        onSelectToggle = { id -> onSelectText(if (id == selectedTextId) null else id) },
-                                        onSelectForce = { id -> onSelectText(id) },
-                                        onCommitHistory = onCommitHistory,
-                                        onMoveDeltaMs = onMoveText,
-                                        onTrimDeltaMs = onTrimTextEdge,
-                                    )
-                                }
-                            }
-                        }
+                    key(textCfg.id) {
                         Box(
                             modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .fillMaxWidth()
-                                .height(0.5.dp)
-                                .background(OutlineSubtle.copy(alpha = 0.4f)),
-                        )
+                                .width(scrollableWidthDp)
+                                .height(textTotalHeightDp)
+                                .clipToBounds()
+                                .alpha(if (textCfg.isHidden) 0.35f else 1f)
+                                .background(ObsidianSurfaceContainer.copy(alpha = 0.22f)),
+                        ) {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                if (textLanes.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(scrollableWidthDp)
+                                            .height(textLaneDp),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .offset { IntOffset(halfViewportPx.roundToInt(), 0) }
+                                                .height((textLaneDp - 8.dp).coerceAtLeast(22.dp))
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(ObsidianSurfaceContainer)
+                                                .clickable {
+                                                    if (!textCfg.isLocked) onOpenSheet(ActiveEditorSheet.TEXT)
+                                                }
+                                                .padding(horizontal = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(Icons.Filled.TextFields, null, tint = Color(0xFFEA580C), modifier = Modifier.size(13.dp))
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                            Text("+ Add text", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = TextSecondary)
+                                        }
+                                    }
+                                } else {
+                                    textLanes.forEachIndexed { laneIdx, laneItems ->
+                                        key("txt_lane_$laneIdx") {
+                                            TimelineTrackLaneRow(
+                                                items = laneItems,
+                                                itemId = { it.id },
+                                                startMsOf = { it.startMs },
+                                                endMsOf = { it.endMs },
+                                                labelOf = { it.text },
+                                                pxPerSec = pxPerSec,
+                                                baseOffsetPx = halfViewportPx,
+                                                scrollableWidthDp = scrollableWidthDp,
+                                                rowHeightDp = textLaneDp,
+                                                containerColor = Color(0xFFEA580C),
+                                                contentColor = Color.White,
+                                                icon = Icons.Filled.TextFields,
+                                                selectedId = selectedTextId,
+                                                isLocked = textCfg.isLocked,
+                                                rowTagPrefix = "timeline_text_${laneIdx}",
+                                                keyframeTimesAndIds = { tx -> tx.keyframes.map { it.id to it.timeMs } },
+                                                selectedKfId = selectedKeyframeId,
+                                                diamondColor = CyberCyan,
+                                                onSelectKeyframe = onSelectTextKeyframe,
+                                                onSelectToggle = { id -> onSelectText(if (id == selectedTextId) null else id) },
+                                                onSelectForce = { id -> onSelectText(id) },
+                                                onCommitHistory = onCommitHistory,
+                                                onMoveDeltaMs = onMoveText,
+                                                onTrimDeltaMs = onTrimTextEdge,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .fillMaxWidth()
+                                    .height(0.5.dp)
+                                    .background(OutlineSubtle.copy(alpha = 0.4f)),
+                            )
+                        }
                     }
 
                     // 3. VIDEO TRACKS (V3 -> V2 -> V1, drag clips up/down across tracks, + Add per upper track, + Ending on V1)
@@ -576,6 +592,7 @@ fun CapCutTimelineArea(
                     val latestOnMoveClipToTrack by rememberUpdatedState(onMoveClipToTrack)
 
                     videoTrackEntries.forEach { (trackIdx, cfg, lanes) ->
+                        key(cfg.id) {
                         val laneHeightDp = cfg.heightDp.coerceIn(34f, 120f).dp
                         val laneHeightPx = with(density) { laneHeightDp.toPx() }.coerceAtLeast(32f)
                         val rowHeightDp = laneHeightDp * lanes.size
@@ -585,6 +602,7 @@ fun CapCutTimelineArea(
                             modifier = Modifier
                                 .width(scrollableWidthDp)
                                 .height(rowHeightDp)
+                                .clipToBounds()
                                 .alpha(if (cfg.isHidden) 0.35f else 1f)
                                 .background(
                                     if (trackIdx % 2 == 0) ObsidianBackground else ObsidianSurfaceContainer.copy(alpha = 0.18f)
@@ -631,7 +649,15 @@ fun CapCutTimelineArea(
                                                         },
                                                         shape = RoundedCornerShape(8.dp),
                                                     )
-                                                    .clickable { latestOnSelectClip(if (isSel) null else clip.id) }
+                                                    .clickable {
+                                                        if (isSel) {
+                                                            latestOnSelectClip(null)
+                                                        } else {
+                                                            latestOnSelectClip(clip.id)
+                                                            latestOnScrubStart()
+                                                            latestOnUpdatePlayhead(span.startMs)
+                                                        }
+                                                    }
                                                     .pointerInput(clip.id) {
                                                         var accumMs = 0f
                                                         var accumDy = 0f
@@ -699,7 +725,7 @@ fun CapCutTimelineArea(
                                                     }
                                                 }
 
-                                                // Beat markers drawn right inside clip
+                                                 // Beat markers drawn right inside clip
                                                 Canvas(modifier = Modifier.fillMaxSize()) {
                                                     val dur = (span.endMs - span.startMs).coerceAtLeast(1L).toFloat()
                                                     clip.beatMarkersMs.forEach { bm ->
@@ -710,36 +736,6 @@ fun CapCutTimelineArea(
                                                             center = Offset(frac * size.width, size.height - 6.dp.toPx()),
                                                         )
                                                     }
-                                                }
-
-                                                // Interactive Tap-Selectable Keyframe Diamonds
-                                                val clipDurF = (span.endMs - span.startMs).coerceAtLeast(1L).toFloat()
-                                                val clipWidthPx = with(density) { clipWidthDp.toPx() }
-                                                clip.keyframes.forEach { kf ->
-                                                    val frac = (kf.timeMs / clipDurF).coerceIn(0.03f, 0.97f)
-                                                    val cx = frac * clipWidthPx - with(density) { 12.dp.toPx() }
-                                                    val isKfSelected = kf.id == selectedKeyframeId
-                                                    TimelineDiamondPin(
-                                                        offsetXPx = cx,
-                                                        offsetYPx = with(density) { 12.dp.toPx() },
-                                                        fillColor = if (isKfSelected) StudioAmber else CyberCyan,
-                                                        isSelected = isKfSelected,
-                                                        tag = "clip_kf_diamond_${kf.id}",
-                                                        onClick = { onSelectClipKeyframe(clip.id, kf.id) },
-                                                    )
-                                                }
-                                                clip.volumeKeyframes.forEach { vkf ->
-                                                    val frac = (vkf.timeMs / clipDurF).coerceIn(0.03f, 0.97f)
-                                                    val cx = frac * clipWidthPx - with(density) { 11.dp.toPx() }
-                                                    val isVkSelected = vkf.id == selectedVolumeKeyframeId
-                                                    TimelineDiamondPin(
-                                                        offsetXPx = cx,
-                                                        offsetYPx = with(density) { 26.dp.toPx() },
-                                                        fillColor = LunaMint,
-                                                        isSelected = isVkSelected,
-                                                        tag = "clip_vol_kf_diamond_${vkf.id}",
-                                                        onClick = { onSelectClipVolumeKeyframe(clip.id, vkf.id) },
-                                                    )
                                                 }
 
                                                 // Smooth Reverse / Speed / Freeze / Reverse / TIMESLICE pill badges
@@ -800,7 +796,7 @@ fun CapCutTimelineArea(
                                                                 verticalAlignment = Alignment.CenterVertically,
                                                             ) {
                                                                 Text(
-                                                                    text = "TIMESLICE",
+                                                                    text = clip.timeslice.mode.badgeLabel,
                                                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, fontWeight = FontWeight.ExtraBold),
                                                                     color = Color.White,
                                                                 )
@@ -825,6 +821,36 @@ fun CapCutTimelineArea(
                                                         },
                                                     )
                                                 }
+                                            }
+
+                                            // Keyframe Diamonds rendered in lane coordinates so 0ms/end diamonds center directly on white playhead line
+                                            val clipDurF = (span.endMs - span.startMs).coerceAtLeast(1L).toFloat()
+                                            val clipWidthPx = with(density) { clipWidthDp.toPx() }
+                                            clip.keyframes.forEach { kf ->
+                                                val frac = (kf.timeMs / clipDurF).coerceIn(0f, 1f)
+                                                val cx = startPx + frac * clipWidthPx - with(density) { 11.dp.toPx() }
+                                                val isKfSelected = kf.id == selectedKeyframeId
+                                                TimelineDiamondPin(
+                                                    offsetXPx = cx,
+                                                    offsetYPx = with(density) { 14.dp.toPx() },
+                                                    fillColor = if (isKfSelected) StudioAmber else CyberCyan,
+                                                    isSelected = isKfSelected,
+                                                    tag = "clip_kf_diamond_${kf.id}",
+                                                    onClick = { onSelectClipKeyframe(clip.id, kf.id) },
+                                                )
+                                            }
+                                            clip.volumeKeyframes.forEach { vkf ->
+                                                val frac = (vkf.timeMs / clipDurF).coerceIn(0f, 1f)
+                                                val cx = startPx + frac * clipWidthPx - with(density) { 11.dp.toPx() }
+                                                val isVkSelected = vkf.id == selectedVolumeKeyframeId
+                                                TimelineDiamondPin(
+                                                    offsetXPx = cx,
+                                                    offsetYPx = with(density) { 28.dp.toPx() },
+                                                    fillColor = LunaMint,
+                                                    isSelected = isVkSelected,
+                                                    tag = "clip_vol_kf_diamond_${vkf.id}",
+                                                    onClick = { onSelectClipVolumeKeyframe(clip.id, vkf.id) },
+                                                )
                                             }
 
                                             // Transition Icon '[|]' at touching cut seams between adjacent clips on this track
@@ -899,12 +925,13 @@ fun CapCutTimelineArea(
                                                 }
                                             }
 
-                                            // Floating Left-edge Mute Clip button
+                                            // Anchored Mute Clip button left of 00:00 (does not chase horizontal scroll)
                                             val firstClip = laneSpans.firstOrNull()?.clip
-                                            if (firstClip != null && (halfViewportPx - hScrollState.value) > 72f) {
+                                            if (firstClip != null && halfViewportPx > 60f) {
+                                                val muteX = (halfViewportPx - with(density) { 58.dp.toPx() }).coerceAtLeast(4f)
                                                 Row(
                                                     modifier = Modifier
-                                                        .offset { IntOffset((hScrollState.value + with(density) { 8.dp.toPx() }).roundToInt(), 0) }
+                                                        .offset { IntOffset(muteX.roundToInt(), 0) }
                                                         .fillMaxHeight(),
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                     verticalAlignment = Alignment.CenterVertically,
@@ -929,12 +956,12 @@ fun CapCutTimelineArea(
                                             }
                                         }
 
-                                        // Upper tracks (V2, V3, V4+): Show '+ Add overlay/PIP' pill when empty or trailing '+'
+                                        // Upper tracks (V2, V3, V4+): Show '+ Add overlay/PIP' pill anchored at 00:00 when empty or trailing '+'
                                         if (trackIdx > 0 && subIdx == 0) {
                                             if (isTrackEmpty) {
                                                 Row(
                                                     modifier = Modifier
-                                                        .offset { IntOffset(maxOf(halfViewportPx.roundToInt(), hScrollState.value + 16), 8) }
+                                                        .offset { IntOffset(halfViewportPx.roundToInt(), 8) }
                                                         .height((laneHeightDp - 16.dp).coerceAtLeast(24.dp))
                                                         .clip(RoundedCornerShape(6.dp))
                                                         .background(ObsidianSurfaceContainer)
@@ -985,6 +1012,7 @@ fun CapCutTimelineArea(
                                     .background(OutlineSubtle.copy(alpha = 0.45f)),
                             )
                         }
+                        }
                     }
 
                     if (overlayLanes.isNotEmpty() || effectLanes.isNotEmpty()) {
@@ -993,57 +1021,61 @@ fun CapCutTimelineArea(
 
                     // 4. Overlay / Sticker Track Lanes
                     overlayLanes.forEachIndexed { laneIdx, laneItems ->
-                        TimelineTrackLaneRow(
-                            items = laneItems,
-                            itemId = { it.id },
-                            startMsOf = { it.startMs },
-                            endMsOf = { it.endMs },
-                            labelOf = { it.displayName },
-                            pxPerSec = pxPerSec,
-                            baseOffsetPx = halfViewportPx,
-                            scrollableWidthDp = scrollableWidthDp,
-                            rowHeightDp = 34.dp,
-                            containerColor = ElectricViolet.copy(alpha = 0.88f),
-                            contentColor = Color.White,
-                            icon = Icons.Filled.Layers,
-                            selectedId = selectedOverlayId,
-                            isLocked = false,
-                            rowTagPrefix = "timeline_overlay_${laneIdx}",
-                            onSelectToggle = { id -> onSelectOverlay(if (id == selectedOverlayId) null else id) },
-                            onSelectForce = { id -> onSelectOverlay(id) },
-                            onCommitHistory = onCommitHistory,
-                            onMoveDeltaMs = onMoveOverlay,
-                            onTrimDeltaMs = onTrimOverlayEdge,
-                        )
+                        key("ov_lane_$laneIdx") {
+                            TimelineTrackLaneRow(
+                                items = laneItems,
+                                itemId = { it.id },
+                                startMsOf = { it.startMs },
+                                endMsOf = { it.endMs },
+                                labelOf = { it.displayName },
+                                pxPerSec = pxPerSec,
+                                baseOffsetPx = halfViewportPx,
+                                scrollableWidthDp = scrollableWidthDp,
+                                rowHeightDp = 34.dp,
+                                containerColor = ElectricViolet.copy(alpha = 0.88f),
+                                contentColor = Color.White,
+                                icon = Icons.Filled.Layers,
+                                selectedId = selectedOverlayId,
+                                isLocked = false,
+                                rowTagPrefix = "timeline_overlay_${laneIdx}",
+                                onSelectToggle = { id -> onSelectOverlay(if (id == selectedOverlayId) null else id) },
+                                onSelectForce = { id -> onSelectOverlay(id) },
+                                onCommitHistory = onCommitHistory,
+                                onMoveDeltaMs = onMoveOverlay,
+                                onTrimDeltaMs = onTrimOverlayEdge,
+                            )
+                        }
                     }
 
                     // 5. Effect Track Lanes
                     effectLanes.forEachIndexed { laneIdx, laneItems ->
-                        TimelineTrackLaneRow(
-                            items = laneItems,
-                            itemId = { it.id },
-                            startMsOf = { it.startMs },
-                            endMsOf = { it.endMs },
-                            labelOf = { fx ->
-                                val objLabel = if (fx.applyToAllVideos) "All videos" else "Main video"
-                                "$objLabel | ${fx.type.label}"
-                            },
-                            pxPerSec = pxPerSec,
-                            baseOffsetPx = halfViewportPx,
-                            scrollableWidthDp = scrollableWidthDp,
-                            rowHeightDp = 34.dp,
-                            containerColor = Color(0xFF7C3AED).copy(alpha = 0.9f),
-                            contentColor = Color.White,
-                            icon = Icons.Filled.AutoAwesome,
-                            selectedId = selectedEffectId,
-                            isLocked = false,
-                            rowTagPrefix = "timeline_effect_${laneIdx}",
-                            onSelectToggle = { id -> onSelectEffect(if (id == selectedEffectId) null else id) },
-                            onSelectForce = { id -> onSelectEffect(id) },
-                            onCommitHistory = onCommitHistory,
-                            onMoveDeltaMs = onMoveEffect,
-                            onTrimDeltaMs = onTrimEffectEdge,
-                        )
+                        key("fx_lane_$laneIdx") {
+                            TimelineTrackLaneRow(
+                                items = laneItems,
+                                itemId = { it.id },
+                                startMsOf = { it.startMs },
+                                endMsOf = { it.endMs },
+                                labelOf = { fx ->
+                                    val objLabel = if (fx.applyToAllVideos) "All videos" else "Main video"
+                                    "$objLabel | ${fx.type.label}"
+                                },
+                                pxPerSec = pxPerSec,
+                                baseOffsetPx = halfViewportPx,
+                                scrollableWidthDp = scrollableWidthDp,
+                                rowHeightDp = 34.dp,
+                                containerColor = Color(0xFF7C3AED).copy(alpha = 0.9f),
+                                contentColor = Color.White,
+                                icon = Icons.Filled.AutoAwesome,
+                                selectedId = selectedEffectId,
+                                isLocked = false,
+                                rowTagPrefix = "timeline_effect_${laneIdx}",
+                                onSelectToggle = { id -> onSelectEffect(if (id == selectedEffectId) null else id) },
+                                onSelectForce = { id -> onSelectEffect(id) },
+                                onCommitHistory = onCommitHistory,
+                                onMoveDeltaMs = onMoveEffect,
+                                onTrimDeltaMs = onTrimEffectEdge,
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(4.dp))
@@ -1051,6 +1083,7 @@ fun CapCutTimelineArea(
                     // 6. Audio Track 1 (A1: Music) & Audio Track 2 (A2: Sound / Voiceover)
                     val latestOnMoveAudioToSlot by rememberUpdatedState(onMoveAudioToSlot)
                     audioTrackEntries.forEach { (slot, cfg, lanes) ->
+                        key(cfg.id) {
                         val auLaneDp = cfg.heightDp.coerceIn(30f, 100f).dp
                         val auLanePx = with(density) { auLaneDp.toPx() }.coerceAtLeast(28f)
                         val rowHeightDp = auLaneDp * maxOf(1, lanes.size)
@@ -1059,6 +1092,7 @@ fun CapCutTimelineArea(
                             modifier = Modifier
                                 .width(scrollableWidthDp)
                                 .height(rowHeightDp)
+                                .clipToBounds()
                                 .alpha(if (cfg.isHidden || cfg.isMuted) 0.42f else 1f)
                                 .background(ObsidianSurfaceContainer.copy(alpha = 0.16f)),
                         ) {
@@ -1072,7 +1106,7 @@ fun CapCutTimelineArea(
                                     ) {
                                         Row(
                                             modifier = Modifier
-                                                .offset { IntOffset(maxOf(halfViewportPx.roundToInt(), hScrollState.value + 16), 0) }
+                                                .offset { IntOffset(halfViewportPx.roundToInt(), 0) }
                                                 .height((auLaneDp - 8.dp).coerceAtLeast(22.dp))
                                                 .clip(RoundedCornerShape(6.dp))
                                                 .background(ObsidianSurfaceContainer)
@@ -1094,40 +1128,42 @@ fun CapCutTimelineArea(
                                     }
                                 } else {
                                     lanes.forEachIndexed { laneIdx, laneItems ->
-                                        TimelineTrackLaneRow(
-                                            items = laneItems,
-                                            itemId = { it.id },
-                                            startMsOf = { it.startMs },
-                                            endMsOf = { it.endMs },
-                                            labelOf = { it.title },
-                                            pxPerSec = pxPerSec,
-                                            baseOffsetPx = halfViewportPx,
-                                            scrollableWidthDp = scrollableWidthDp,
-                                            rowHeightDp = auLaneDp,
-                                            containerColor = if (slot == 0) Color(0xFF0E7490) else Color(0xFF047857),
-                                            contentColor = Color.White,
-                                            icon = Icons.Filled.MusicNote,
-                                            selectedId = selectedAudioId,
-                                            isLocked = cfg.isLocked,
-                                            rowTagPrefix = "timeline_audio_${slot}_${laneIdx}",
-                                            keyframeTimesAndIds = { au -> au.volumeKeyframes.map { it.id to it.timeMs } },
-                                            selectedKfId = selectedVolumeKeyframeId,
-                                            diamondColor = LunaMint,
-                                            slotIndex = slot,
-                                            verticalSwitchThresholdPx = auLanePx * 0.55f,
-                                            onSwitchVerticalSlot = { auId, dir ->
-                                                val targetSlot = (dir.coerceIn(-1, 1) + slot).coerceIn(0, 1)
-                                                if (targetSlot != slot) {
-                                                    latestOnMoveAudioToSlot(auId, targetSlot)
-                                                }
-                                            },
-                                            onSelectKeyframe = onSelectAudioVolumeKeyframe,
-                                            onSelectToggle = { id -> onSelectAudio(if (id == selectedAudioId) null else id) },
-                                            onSelectForce = { id -> onSelectAudio(id) },
-                                            onCommitHistory = onCommitHistory,
-                                            onMoveDeltaMs = onMoveAudio,
-                                            onTrimDeltaMs = onTrimAudioEdge,
-                                        )
+                                        key("au_${slot}_$laneIdx") {
+                                            TimelineTrackLaneRow(
+                                                items = laneItems,
+                                                itemId = { it.id },
+                                                startMsOf = { it.startMs },
+                                                endMsOf = { it.endMs },
+                                                labelOf = { it.title },
+                                                pxPerSec = pxPerSec,
+                                                baseOffsetPx = halfViewportPx,
+                                                scrollableWidthDp = scrollableWidthDp,
+                                                rowHeightDp = auLaneDp,
+                                                containerColor = if (slot == 0) Color(0xFF0E7490) else Color(0xFF047857),
+                                                contentColor = Color.White,
+                                                icon = Icons.Filled.MusicNote,
+                                                selectedId = selectedAudioId,
+                                                isLocked = cfg.isLocked,
+                                                rowTagPrefix = "timeline_audio_${slot}_${laneIdx}",
+                                                keyframeTimesAndIds = { au -> au.volumeKeyframes.map { it.id to it.timeMs } },
+                                                selectedKfId = selectedVolumeKeyframeId,
+                                                diamondColor = LunaMint,
+                                                slotIndex = slot,
+                                                verticalSwitchThresholdPx = auLanePx * 0.55f,
+                                                onSwitchVerticalSlot = { auId, dir ->
+                                                    val targetSlot = (dir.coerceIn(-1, 1) + slot).coerceIn(0, 1)
+                                                    if (targetSlot != slot) {
+                                                        latestOnMoveAudioToSlot(auId, targetSlot)
+                                                    }
+                                                },
+                                                onSelectKeyframe = onSelectAudioVolumeKeyframe,
+                                                onSelectToggle = { id -> onSelectAudio(if (id == selectedAudioId) null else id) },
+                                                onSelectForce = { id -> onSelectAudio(id) },
+                                                onCommitHistory = onCommitHistory,
+                                                onMoveDeltaMs = onMoveAudio,
+                                                onTrimDeltaMs = onTrimAudioEdge,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1139,16 +1175,56 @@ fun CapCutTimelineArea(
                                     .background(OutlineSubtle.copy(alpha = 0.35f)),
                             )
                         }
+                        }
                     }
                 }
+            }
+        }
 
-                // Centered crisp white Playhead vertical line across the timeline lanes viewport ONLY
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .width(2.dp)
-                        .fillMaxHeight()
-                        .background(Color.White),
+        // BUG 4 FIX: Prominent draggable white playhead line + top downward triangle spanning ALL tracks
+        Box(
+            modifier = Modifier
+                .offset(x = TRACK_HEADER_WIDTH + halfViewportDp - 14.dp)
+                .width(28.dp)
+                .fillMaxHeight()
+                .zIndex(20f)
+                .pointerInput(totalDurationMs, pxPerSec) {
+                    var accumMs = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            accumMs = 0f
+                            latestOnScrubStart()
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            accumMs += (dragAmount / latestPxPerSec) * 1000f
+                            val wholeMs = accumMs.toLong()
+                            if (wholeMs != 0L) {
+                                accumMs -= wholeMs
+                                val nextMs = (latestPlayheadMs + wholeMs).coerceIn(0L, latestTotalDurationMs)
+                                latestOnUpdatePlayhead(nextMs)
+                            }
+                        },
+                    )
+                }
+                .testTag("timeline_playhead"),
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cx = size.width * 0.5f
+                val triHalfW = 7.dp.toPx()
+                val triH = 10.dp.toPx()
+                val tri = Path().apply {
+                    moveTo(cx - triHalfW, 0f)
+                    lineTo(cx + triHalfW, 0f)
+                    lineTo(cx, triH)
+                    close()
+                }
+                drawPath(tri, color = Color.White)
+                drawLine(
+                    color = Color.White,
+                    start = Offset(cx, triH * 0.7f),
+                    end = Offset(cx, size.height),
+                    strokeWidth = 2.5.dp.toPx(),
                 )
             }
         }
@@ -1377,6 +1453,7 @@ private fun <T> TimelineTrackLaneRow(
         modifier = Modifier
             .width(scrollableWidthDp)
             .height(rowHeightDp)
+            .clipToBounds()
             .padding(vertical = 2.dp),
     ) {
         items.forEachIndexed { idx, item ->
@@ -1464,26 +1541,6 @@ private fun <T> TimelineTrackLaneRow(
                     )
                 }
 
-                // Interactive tap-selectable Keyframe Diamonds on Text & Audio items
-                val kfs = keyframeTimesAndIds(item)
-                if (kfs.isNotEmpty() && onSelectKeyframe != null) {
-                    val durF = (endMs - startMs).coerceAtLeast(1L).toFloat()
-                    val barWpx = with(density) { barWidthDp.toPx() }
-                    kfs.forEach { (kfId, tMs) ->
-                        val frac = (tMs / durF).coerceIn(0.04f, 0.96f)
-                        val cx = frac * barWpx - with(density) { 11.dp.toPx() }
-                        val isKfSel = kfId == selectedKfId
-                        TimelineDiamondPin(
-                            offsetXPx = cx,
-                            offsetYPx = with(density) { 4.dp.toPx() },
-                            fillColor = if (isKfSel) StudioAmber else diamondColor,
-                            isSelected = isKfSel,
-                            tag = "${rowTagPrefix}_kf_$kfId",
-                            onClick = { onSelectKeyframe(id, kfId) },
-                        )
-                    }
-                }
-
                 if (isSelected && !isLocked) {
                     TrimHandlesPair(
                         itemId = id,
@@ -1495,6 +1552,26 @@ private fun <T> TimelineTrackLaneRow(
                         endTag = "${rowTagPrefix}_${idx}_trim_end",
                         onCommitHistory = onCommitHistory,
                         onTrimDeltaMs = { isStart, delta -> onTrimDeltaMs(id, isStart, delta) },
+                    )
+                }
+            }
+
+            // Interactive tap-selectable Keyframe Diamonds centered cleanly on playhead coordinates
+            val kfs = keyframeTimesAndIds(item)
+            if (kfs.isNotEmpty() && onSelectKeyframe != null) {
+                val durF = (endMs - startMs).coerceAtLeast(1L).toFloat()
+                val barWpx = with(density) { barWidthDp.toPx() }
+                kfs.forEach { (kfId, tMs) ->
+                    val frac = (tMs / durF).coerceIn(0f, 1f)
+                    val cx = startPx + frac * barWpx - with(density) { 11.dp.toPx() }
+                    val isKfSel = kfId == selectedKfId
+                    TimelineDiamondPin(
+                        offsetXPx = cx,
+                        offsetYPx = with(density) { 4.dp.toPx() },
+                        fillColor = if (isKfSel) StudioAmber else diamondColor,
+                        isSelected = isKfSel,
+                        tag = "${rowTagPrefix}_kf_$kfId",
+                        onClick = { onSelectKeyframe(id, kfId) },
                     )
                 }
             }

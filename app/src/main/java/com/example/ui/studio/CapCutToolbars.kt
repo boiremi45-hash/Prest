@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -204,7 +205,8 @@ fun CapCutClipSelectedBar(
                 icon = Icons.Filled.ContentCut,
                 label = "Split",
                 tag = "clip_tool_split",
-                highlightColor = if (canSplit) Color.White else TextSecondary.copy(alpha = 0.4f),
+                highlightColor = if (canSplit) Color.White else TextSecondary,
+                dimmed = !canSplit,
                 onClick = onSplit,
             )
             ToolbarActionItem(Icons.AutoMirrored.Filled.VolumeUp, "Volume", "clip_tool_volume") {
@@ -284,6 +286,7 @@ fun CapCutClipSelectedBar(
 
 @Composable
 fun CapCutEffectSelectedBar(
+    canSplit: Boolean = true,
     onBack: () -> Unit,
     onSplit: () -> Unit,
     onAdjust: () -> Unit,
@@ -294,7 +297,7 @@ fun CapCutEffectSelectedBar(
     modifier: Modifier = Modifier,
 ) {
     CapCutContextualTrackBar(backTag = "effect_menu_back", onBack = onBack, modifier = modifier) {
-        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "effect_tool_split", onClick = onSplit)
+        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "effect_tool_split", dimmed = !canSplit, onClick = onSplit)
         ToolbarActionItem(Icons.Filled.Tune, "Adjust", "effect_tool_adjust", onClick = onAdjust)
         ToolbarActionItem(Icons.Filled.SwapHoriz, "Replace", "effect_tool_replace", onClick = onReplace)
         ToolbarActionItem(Icons.Filled.FileCopy, "Duplicate", "effect_tool_duplicate", onClick = onDuplicate)
@@ -305,6 +308,7 @@ fun CapCutEffectSelectedBar(
 
 @Composable
 fun CapCutTextSelectedBar(
+    canSplit: Boolean = true,
     showGraphsButton: Boolean,
     onBack: () -> Unit,
     onAddText: () -> Unit,
@@ -321,7 +325,7 @@ fun CapCutTextSelectedBar(
             ToolbarActionItem(Icons.Filled.GraphicEq, "Graphs", "text_tool_graphs", highlightColor = CyberCyan, onClick = onGraphs)
         }
         ToolbarActionItem(Icons.Filled.OpenWith, "Transform", "text_tool_transform", highlightColor = CyberCyan, onClick = onTransform)
-        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "text_tool_split", onClick = onSplit)
+        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "text_tool_split", dimmed = !canSplit, onClick = onSplit)
         ToolbarActionItem(Icons.Filled.Edit, "Style", "text_tool_style", onClick = onStyle)
         ToolbarActionItem(Icons.Filled.TextFields, "Add text", "text_tool_add", onClick = onAddText)
         ToolbarActionItem(Icons.Filled.Animation, "Animations", "text_tool_animations", onClick = onAnimations)
@@ -331,6 +335,7 @@ fun CapCutTextSelectedBar(
 
 @Composable
 fun CapCutOverlaySelectedBar(
+    canSplit: Boolean = true,
     onBack: () -> Unit,
     onOpenOverlayTools: () -> Unit,
     onTransform: () -> Unit,
@@ -342,7 +347,7 @@ fun CapCutOverlaySelectedBar(
     CapCutContextualTrackBar(backTag = "overlay_menu_back", onBack = onBack, modifier = modifier) {
         ToolbarActionItem(Icons.Filled.OpenWith, "Transform", "overlay_tool_transform", highlightColor = CyberCyan, onClick = onTransform)
         ToolbarActionItem(Icons.Filled.Layers, "Overlay FX", "overlay_tool_edit", highlightColor = CyberCyan, onClick = onOpenOverlayTools)
-        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "overlay_tool_split", onClick = onSplit)
+        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "overlay_tool_split", dimmed = !canSplit, onClick = onSplit)
         ToolbarActionItem(Icons.Filled.FileCopy, "Duplicate", "overlay_tool_duplicate", onClick = onDuplicate)
         ToolbarActionItem(Icons.Filled.DeleteOutline, "Delete", "overlay_tool_delete", onClick = onDelete)
     }
@@ -350,6 +355,7 @@ fun CapCutOverlaySelectedBar(
 
 @Composable
 fun CapCutAudioSelectedBar(
+    canSplit: Boolean = true,
     onBack: () -> Unit,
     onVolume: () -> Unit,
     onSplit: () -> Unit,
@@ -359,7 +365,7 @@ fun CapCutAudioSelectedBar(
 ) {
     CapCutContextualTrackBar(backTag = "audio_menu_back", onBack = onBack, modifier = modifier) {
         ToolbarActionItem(Icons.AutoMirrored.Filled.VolumeUp, "Volume", "audio_tool_volume", onClick = onVolume)
-        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "audio_tool_split", onClick = onSplit)
+        ToolbarActionItem(Icons.Filled.ContentCut, "Split", "audio_tool_split", dimmed = !canSplit, onClick = onSplit)
         ToolbarActionItem(Icons.Filled.FileCopy, "Duplicate", "audio_tool_duplicate", onClick = onDuplicate)
         ToolbarActionItem(Icons.Filled.DeleteOutline, "Delete", "audio_tool_delete", onClick = onDelete)
     }
@@ -418,6 +424,7 @@ private fun ToolbarActionItem(
     label: String,
     tag: String,
     highlightColor: Color = Color.White,
+    dimmed: Boolean = false,
     onClick: () -> Unit,
 ) {
     Column(
@@ -425,6 +432,7 @@ private fun ToolbarActionItem(
             .width(62.dp)
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
+            .alpha(if (dimmed) 0.4f else 1f)
             .padding(vertical = 6.dp, horizontal = 2.dp)
             .testTag(tag),
         horizontalAlignment = Alignment.CenterHorizontally,

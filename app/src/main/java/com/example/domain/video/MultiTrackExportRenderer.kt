@@ -20,6 +20,7 @@ import android.opengl.EGLSurface
 import android.opengl.GLES20
 import android.opengl.GLUtils
 import android.os.Build
+import android.util.Log
 import android.util.LruCache
 import android.view.Surface
 import com.example.data.model.AspectPreset
@@ -267,6 +268,7 @@ object MultiTrackExportRenderer {
                 )
             )
         } catch (e: Exception) {
+            Log.e("MultiTrackExport", "Multi-track composite export failed", e)
             runCatching { outFile.delete() }
             return Result.failure(e)
         } finally {
@@ -274,10 +276,12 @@ object MultiTrackExportRenderer {
             retrievers.values.forEach { runCatching { it.release() } }
             if (!composeBitmap.isRecycled) composeBitmap.recycle()
             runCatching { inputSurface?.release() }
-            runCatching { encoder.stop() }
+            runCatching { encoder.stop() }.onFailure { Log.w("MultiTrackExport", "Encoder stop error", it) }
             runCatching { encoder.release() }
-            if (muxerStarted) runCatching { muxer.stop() }
-            runCatching { muxer.release() }
+            if (muxerStarted) {
+                runCatching { muxer.stop() }.onFailure { Log.e("MultiTrackExport", "MediaMuxer.stop() error", it) }
+            }
+            runCatching { muxer.release() }.onFailure { Log.w("MultiTrackExport", "MediaMuxer.release() error", it) }
         }
     }
 

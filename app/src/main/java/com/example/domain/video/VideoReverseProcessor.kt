@@ -24,6 +24,7 @@ import android.opengl.GLES20
 import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.os.Build
+import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,12 +45,36 @@ import kotlin.math.roundToInt
  */
 object VideoReverseProcessor {
 
+    private const val TAG = "VideoReverseProcessor"
+
     data class ReverseResult(
         val reversedUri: Uri,
         val outputFile: File,
         val durationMs: Long,
         val frameCount: Int,
     )
+
+    internal fun alignPcmToExactDuration(
+        pcmBytes: ByteArray,
+        sampleRate: Int,
+        channelCount: Int,
+        targetDurationMs: Long,
+    ): ByteArray {
+        val bytesPerFrame = (channelCount.coerceIn(1, 2) * 2)
+        val expectedFrames = ((sampleRate.coerceAtLeast(8_000).toLong() * targetDurationMs.coerceAtLeast(1L)) / 1_000L)
+            .coerceAtLeast(1L)
+        val expectedLen = (expectedFrames * bytesPerFrame).toInt().coerceAtLeast(bytesPerFrame)
+        val alignedSourceLen = (pcmBytes.size / bytesPerFrame) * bytesPerFrame
+        if (alignedSourceLen == expectedLen) {
+            return if (pcmBytes.size == expectedLen) pcmBytes else pcmBytes.copyOf(expectedLen)
+        }
+        val out = ByteArray(expectedLen)
+        val copyLen = minOf(alignedSourceLen, expectedLen)
+        if (copyLen > 0) {
+            System.arraycopy(pcmBytes, 0, out, 0, copyLen)
+        }
+        return out
+    }
 
     suspend fun generateReversedClipMp4(
         context: Context,
@@ -112,22 +137,29 @@ object VideoReverseProcessor {
                 onEncodeProgress = { p -> onProgress(52 + (p * 0.30f).roundToInt(), "Encoding reversed video...") },
             )
 
-            // Decode and reverse (or keep) audio if present in source
+            // Reverse video ONLY when !reverseAudio (never keep mismatched forward audio on reversed video)
             val audioFile = File(workDir, "audio_rev.mp4")
-            val hasAudio = runCatching {
-                extractAndEncodeAudio(
-                    context = context,
-                    uri = sourceUri,
-                    startMs = safeStartMs,
-                    endMs = safeEndMs,
-                    reversePcm = reverseAudio,
-                    outputFile = audioFile,
-                )
-            }.getOrDefault(false)
+            val hasAudio = if (reverseAudio) {
+                runCatching {
+                    extractAndEncodeAudio(
+                        context = context,
+                        uri = sourceUri,
+                        startMs = safeStartMs,
+                        endMs = safeEndMs,
+                        targetDurationMs = spanDurMs,
+                        reversePcm = true,
+                        outputFile = audioFile,
+                    )
+                }.onFailure { err ->
+                    Log.w(TAG, "Audio reversal failed; proceeding video-only", err)
+                }.getOrDefault(false)
+            } else {
+                false
+            }
 
             onProgress(88, "Finalizing reversed clip...")
             if (hasAudio && audioFile.exists() && audioFile.length() > 0L) {
-                muxVideoAndAudio(videoOnlyFile, audioFile, outFile)
+                muxVideoAndAudio(videoOnlyFile, audioFile, outFile, spanDurMs)
             } else {
                 videoOnlyFile.copyTo(outFile, overwrite = true)
             }
@@ -397,12 +429,12 @@ object VideoReverseProcessor {
             drainEncoder(true)
             inputSurface.release()
         } finally {
-            runCatching { encoder.stop() }
-            runCatching { encoder.release() }
+            runCatching { encoder.stop() }.onFailure { Log.w(TAG, "Encoder stop warning", it) }
+            runCatching { encoder.release() }.onFailure { Log.w(TAG, "Encoder release warning", it) }
             if (muxerStarted) {
-                runCatching { muxer.stop() }
+                runCatching { muxer.stop() }.onFailure { Log.e(TAG, "Muxer stop error in encodeBitmapsReverse", it) }
             }
-            runCatching { muxer.release() }
+            runCatching { muxer.release() }.onFailure { Log.w(TAG, "Muxer release warning", it) }
         }
     }
 
@@ -411,6 +443,7 @@ object VideoReverseProcessor {
         uri: Uri,
         startMs: Long,
         endMs: Long,
+        targetDurationMs: Long,
         reversePcm: Boolean,
         outputFile: File,
     ): Boolean {
@@ -492,27 +525,35 @@ object VideoReverseProcessor {
             runCatching { decoder.release() }
             decoder = null
 
-            val pcmBytes = pcmOut.toByteArray()
-            if (pcmBytes.isEmpty()) return false
+            val rawPcmBytes = pcmOut.toByteArray()
+            if (rawPcmBytes.isEmpty()) return false
 
             val bytesPerSampleFrame = channelCount * 2
-            val alignedLen = (pcmBytes.size / bytesPerSampleFrame) * bytesPerSampleFrame
-            if (alignedLen <= 0) return false
+            val rawAlignedLen = (rawPcmBytes.size / bytesPerSampleFrame) * bytesPerSampleFrame
+            if (rawAlignedLen <= 0) return false
 
             if (reversePcm) {
                 // Reverse 16-bit audio sample frames cleanly (preserves stereo L/R channel order per sample frame)
                 var lo = 0
-                var hi = alignedLen - bytesPerSampleFrame
+                var hi = rawAlignedLen - bytesPerSampleFrame
                 while (lo < hi) {
                     for (b in 0 until bytesPerSampleFrame) {
-                        val tmp = pcmBytes[lo + b]
-                        pcmBytes[lo + b] = pcmBytes[hi + b]
-                        pcmBytes[hi + b] = tmp
+                        val tmp = rawPcmBytes[lo + b]
+                        rawPcmBytes[lo + b] = rawPcmBytes[hi + b]
+                        rawPcmBytes[hi + b] = tmp
                     }
                     lo += bytesPerSampleFrame
                     hi -= bytesPerSampleFrame
                 }
             }
+            // Trim or zero-pad PCM silence so audio length matches video track duration exactly
+            val pcmBytes = alignPcmToExactDuration(
+                pcmBytes = rawPcmBytes,
+                sampleRate = sampleRate,
+                channelCount = channelCount,
+                targetDurationMs = targetDurationMs,
+            )
+            val alignedLen = pcmBytes.size
 
             // Encode PCM -> AAC .mp4
             val encFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
@@ -580,16 +621,21 @@ object VideoReverseProcessor {
         }
     }
 
-    private fun muxVideoAndAudio(videoFile: File, audioFile: File, outputFile: File) {
+    private fun muxVideoAndAudio(videoFile: File, audioFile: File, outputFile: File, targetDurationMs: Long) {
         val vExt = MediaExtractor()
         val aExt = MediaExtractor()
-        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxer: MediaMuxer? = null
         var muxerStarted = false
         try {
             vExt.setDataSource(videoFile.absolutePath)
             aExt.setDataSource(audioFile.absolutePath)
+            if (vExt.trackCount == 0 || aExt.trackCount == 0) {
+                videoFile.copyTo(outputFile, overwrite = true)
+                return
+            }
             vExt.selectTrack(0)
             aExt.selectTrack(0)
+            muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             val vTrack = muxer.addTrack(vExt.getTrackFormat(0))
             val aTrack = muxer.addTrack(aExt.getTrackFormat(0))
             muxer.start()
@@ -597,25 +643,43 @@ object VideoReverseProcessor {
 
             val buf = ByteBuffer.allocate(512 * 1024)
             val info = MediaCodec.BufferInfo()
+            var maxVideoPtsUs = targetDurationMs.coerceAtLeast(200L) * 1_000L
+            var lastVPts = -1L
             while (true) {
                 val sz = vExt.readSampleData(buf, 0)
                 if (sz < 0) break
-                info.set(0, sz, vExt.sampleTime, vExt.sampleFlags)
+                val pts = vExt.sampleTime.coerceAtLeast(lastVPts + 1L)
+                lastVPts = pts
+                maxVideoPtsUs = maxOf(maxVideoPtsUs, pts)
+                info.set(0, sz, pts, vExt.sampleFlags)
                 muxer.writeSampleData(vTrack, buf, info)
                 vExt.advance()
             }
+            var lastAPts = -1L
             while (true) {
                 val sz = aExt.readSampleData(buf, 0)
                 if (sz < 0) break
-                info.set(0, sz, aExt.sampleTime, aExt.sampleFlags)
+                val rawPts = aExt.sampleTime
+                if (rawPts > maxVideoPtsUs + 20_000L) break
+                val pts = rawPts.coerceAtLeast(lastAPts + 1L)
+                lastAPts = pts
+                info.set(0, sz, pts, aExt.sampleFlags)
                 muxer.writeSampleData(aTrack, buf, info)
                 aExt.advance()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "muxVideoAndAudio failed; retrying video-only fallback", e)
+            runCatching { outputFile.delete() }
+            videoFile.copyTo(outputFile, overwrite = true)
         } finally {
             runCatching { vExt.release() }
             runCatching { aExt.release() }
-            if (muxerStarted) runCatching { muxer.stop() }
-            runCatching { muxer.release() }
+            muxer?.let { m ->
+                if (muxerStarted) {
+                    runCatching { m.stop() }.onFailure { Log.e(TAG, "MediaMuxer.stop() failed", it) }
+                }
+                runCatching { m.release() }.onFailure { Log.e(TAG, "MediaMuxer.release() failed", it) }
+            }
         }
     }
 

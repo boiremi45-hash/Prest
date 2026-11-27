@@ -643,6 +643,7 @@ enum class TransitionType(val label: String, val code: Int) {
     LIGHT_TWIST("Light Twist", 5),
     SCANLINE_GLITCH("Scanline Glitch", 6),
     PULSE_FADE("Pulse Fade", 7),
+    STRETCH_LEFT("Stretch Left", 8),
 }
 
 @Serializable
@@ -688,6 +689,7 @@ enum class CapCutEffectType(
     LED_MATRIX("LED Matrix", 10, EffectMainTab.AI, EffectSubCategory.NEW),
     GOLDEN_RAY("Golden Ray", 11, EffectMainTab.STYLE, EffectSubCategory.NEW),
     TRACKING_GLITCH("Tracking Glitch", 12, EffectMainTab.AI, EffectSubCategory.TRENDING),
+    DELAY_GLITCH("Delay Glitch", 13, EffectMainTab.VIDEO, EffectSubCategory.TRENDING),
 }
 
 @Serializable
@@ -698,6 +700,8 @@ data class VideoEffectLayer(
     val startMs: Long = 0L,
     val endMs: Long = 8_000L,
     val applyToAllVideos: Boolean = false,
+    val speed: Float = 100f,
+    val rotateDeg: Float = 15f,
 )
 
 @Serializable
@@ -959,52 +963,91 @@ data class SmoothReverseConfig(
 )
 
 @Serializable
-enum class TimesliceDirection(val label: String, val shortLabel: String) {
-    LEFT_TO_RIGHT("Left to Right", "L → R"),
-    RIGHT_TO_LEFT("Right to Left", "R → L"),
-    TOP_TO_BOTTOM("Top to Bottom", "T → B"),
-    BOTTOM_TO_TOP("Bottom to Top", "B → T"),
+enum class TimesliceMode(val label: String, val badgeLabel: String) {
+    CAPCUT("CapCut Mode", "CAPCUT TS"),
+    NODE("Node Mode", "TIME SLICE"),
 }
 
 @Serializable
 data class TimesliceSettings(
     val enabled: Boolean = false,
-    val slices: Int = 10,                // 3 .. 30
-    val direction: TimesliceDirection = TimesliceDirection.LEFT_TO_RIGHT,
-    val timeSpreadSec: Float = 0.3f,     // 0.1f .. 1.0f between slices
-    val feather: Float = 25f,            // 0f .. 100f soft-edge blend
-    val intensity: Float = 1.0f,         // 0f .. 1.0f effect blend
-    val previewEnabled: Boolean = true,  // Preview On / Off
+    val mode: TimesliceMode = TimesliceMode.NODE,
+    val previewEnabled: Boolean = true,
+    // Node Mode ("Time Slice") exact defaults: 5 slices, 0 deg angle, 2 frame interval, 25 frame offset, 0.50 feather
+    val sliceCount: Int = 5,                   // 1 .. 10
+    val sliceAngleDeg: Float = 0f,             // 0 .. 360 (0 = vertical, 90 = horizontal)
+    val frameInterval: Int = 2,                // 0 .. 10 frames between slices
+    val frameOffset: Int = 25,                 // 0 .. 100 starting offset in frames
+    val sliceFeather: Float = 0.50f,           // 0.00 .. 1.00 soft blend edge
+    val animate: Boolean = false,              // OFF = static slices, ON = Frame Offset increases over time
+    // CapCut Mode ("Easy / Ghost") parameters
+    val capcutAmount: Float = 100f,            // 0 .. 100
+    val capcutSpeed: Float = 100f,             // 0 .. 100
+    val capcutRotateDeg: Float = 15f,          // 0 .. 360
+    val capcutStretchDurationSec: Float = 0.4f,// 0.3 .. 0.5
+    val capcutApplyToAllVideos: Boolean = true,// All Videos (V1+V2)
+    val capcutEffectLayerId: String? = null,
+    val capcutTransitionAfterClipId: String? = null,
 ) {
-    fun clampedSlices(): Int = slices.coerceIn(3, 30)
+    fun isNodeModeActive(): Boolean = enabled && mode == TimesliceMode.NODE
+    fun isCapCutModeActive(): Boolean = enabled && mode == TimesliceMode.CAPCUT
 
-    fun timeSpreadMs(): Long = (timeSpreadSec.coerceIn(0.1f, 1.0f) * 1000f).toLong()
+    fun clampedSliceCount(): Int = sliceCount.coerceIn(1, 10)
+    fun clampedAngleDeg(): Float = sliceAngleDeg.coerceIn(0f, 360f)
+    fun clampedFrameInterval(): Int = frameInterval.coerceIn(0, 10)
+    fun clampedFrameOffset(): Int = frameOffset.coerceIn(0, 100)
+    fun clampedFeather(): Float = sliceFeather.coerceIn(0f, 1f)
 
-    fun isHorizontalSlices(): Boolean =
-        direction == TimesliceDirection.LEFT_TO_RIGHT || direction == TimesliceDirection.RIGHT_TO_LEFT
+    fun effectiveOffsetFrames(elapsedMs: Long, fps: Float = 30f): Float {
+        val base = clampedFrameOffset().toFloat()
+        if (!animate) return base
+        val safeFps = fps.coerceIn(12f, 120f)
+        val elapsedSec = elapsedMs.coerceAtLeast(0L) / 1000f
+        return base + elapsedSec * (safeFps * 0.45f)
+    }
 
     /**
-     * Maps visual slice index `i` (0..N-1 left-to-right or top-to-bottom) to sampled source timestamp,
-     * applying T + (step * timeSpread) along the active direction and clamping cleanly within [clipStartMs, clipEndMs].
+     * Node Video Time Slice sampler:
+     * For output frame at baseTimeMs (T), for slice i (0..Count-1),
+     * samples T + (i * Frame Interval + effectiveOffsetFrames) * frameDurationMs.
+     * Wraps modulo clip span if past clipEndMs so all N slices stay distinct even on short clips.
      */
-    fun sampleTimeMs(
+    fun sampleNodeTimeMs(
         baseTimeMs: Long,
-        visualSliceIndex: Int,
+        sliceIndex: Int,
         clipStartMs: Long,
         clipEndMs: Long,
+        fps: Float = 30f,
     ): Long {
-        val count = clampedSlices()
-        val idx = visualSliceIndex.coerceIn(0, count - 1)
-        val directionalStep = when (direction) {
-            TimesliceDirection.LEFT_TO_RIGHT,
-            TimesliceDirection.TOP_TO_BOTTOM -> idx
-            TimesliceDirection.RIGHT_TO_LEFT,
-            TimesliceDirection.BOTTOM_TO_TOP -> (count - 1 - idx)
-        }
-        val raw = baseTimeMs + directionalStep.toLong() * timeSpreadMs()
         val safeStart = clipStartMs.coerceAtLeast(0L)
         val safeEnd = clipEndMs.coerceAtLeast(safeStart)
-        return raw.coerceIn(safeStart, safeEnd)
+        val spanMs = safeEnd - safeStart
+        if (spanMs <= 16L) return safeStart
+
+        val safeFps = fps.coerceIn(12f, 120f)
+        val frameMs = 1000f / safeFps
+        val idx = sliceIndex.coerceIn(0, clampedSliceCount() - 1)
+        val elapsedMs = (baseTimeMs - safeStart).coerceAtLeast(0L)
+        val totalOffsetFrames = idx * clampedFrameInterval().toFloat() + effectiveOffsetFrames(elapsedMs, safeFps)
+        val rawMs = baseTimeMs + (totalOffsetFrames * frameMs).toLong()
+        if (rawMs <= safeEnd) return rawMs.coerceAtLeast(safeStart)
+        val wrapped = ((rawMs - safeStart) % spanMs) + safeStart
+        return wrapped.coerceIn(safeStart, safeEnd)
+    }
+
+    companion object {
+        fun viralNodePreset(previewEnabled: Boolean = true, animate: Boolean = false): TimesliceSettings =
+            TimesliceSettings(
+                enabled = true,
+                mode = TimesliceMode.NODE,
+                previewEnabled = previewEnabled,
+                sliceCount = 5,
+                sliceAngleDeg = 0f,
+                frameInterval = 2,
+                frameOffset = 25,
+                sliceFeather = 0.50f,
+                animate = animate,
+            )
     }
 }
 

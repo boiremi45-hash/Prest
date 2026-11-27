@@ -539,9 +539,12 @@ fun LunaApp() {
                             onDuplicateEffect = { viewModel.duplicateEffectLayer(it) },
                             onSetEffectObjectTarget = { id, all -> viewModel.setEffectObjectTarget(id, all) },
                             onDeleteEffect = { viewModel.removeEffectLayer(it) },
-                            onEnableTimeslice = { viewModel.enableTimesliceOnSelectedClip() },
-                            onUpdateTimeslice = { cfg, hist -> viewModel.updateSelectedClipTimeslice(cfg, hist) },
-                            onDeleteTimeslice = { viewModel.removeSelectedClipTimeslice() },
+                            onApplyCapCutTimeslice = { viewModel.applyCapCutTimeslice() },
+                            onApplyNodeTimeslice = { viewModel.applyNodeTimeslice() },
+                            onUpdateTimeslice = { cfg, hist -> viewModel.updateTimesliceSettings(cfg, hist) },
+                            onToggleTimeslicePreview = { viewModel.toggleTimeslicePreview() },
+                            onRemoveTimeslice = { viewModel.removeTimeslice() },
+                            onSaveTimeslicePreset = { viewModel.saveTimesliceAsPreset() },
                             onUpdateTransition = { id, t, d, all -> viewModel.updateTransition(id, t, d, all) },
                             onUpdateAdjust = { viewModel.updateAdjust(it) },
                             onAutoAdjust = { viewModel.applySmartAutoAdjust() },
@@ -579,6 +582,7 @@ fun LunaApp() {
                                 pendingVideoSaveCopy = record
                                 mp4SaveCopyLauncher.launch(record.outputFileName)
                             },
+                            onShowToast = { viewModel.postStatusMessage(it) },
                         )
                     }
 

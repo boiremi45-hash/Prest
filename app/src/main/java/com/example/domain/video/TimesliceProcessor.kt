@@ -30,6 +30,7 @@ import android.opengl.GLES20
 import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.os.Build
+import android.util.Log
 import android.util.LruCache
 import android.view.Surface
 import com.example.data.model.CanvasFitMode
@@ -45,11 +46,14 @@ import java.nio.FloatBuffer
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
- * Shared Canvas slice compositor for LUNA's unique Timeslice effect.
- * Used in real-time by Compose Preview AND at full resolution by Export.
+ * Shared Canvas slice compositor for LUNA's Node-Mode "Time Slice" effect.
+ * Used in real-time by Compose Preview AND at full 1080p resolution by Export.
  */
 object TimesliceCompositor {
 
@@ -61,6 +65,7 @@ object TimesliceCompositor {
         clipStartMs: Long,
         clipEndMs: Long,
         settings: TimesliceSettings,
+        fps: Float = 30f,
         fitMode: CanvasFitMode = CanvasFitMode.FILL,
         frameProvider: (sampleTimeMs: Long) -> Bitmap?,
     ): Boolean {
@@ -68,7 +73,6 @@ object TimesliceCompositor {
         val safeBaseMs = baseTimeMs.coerceIn(clipStartMs, clipEndMs.coerceAtLeast(clipStartMs))
         val baseBmp = frameProvider(safeBaseMs) ?: return false
 
-        val intensity = settings.intensity.coerceIn(0f, 1f)
         val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
         fun computeDstRect(bmp: Bitmap): RectF {
@@ -103,91 +107,90 @@ object TimesliceCompositor {
         }
 
         val baseDst = computeDstRect(baseBmp)
-        if (!settings.enabled || intensity <= 0.01f) {
+        if (!settings.isNodeModeActive()) {
             canvas.drawBitmap(baseBmp, null, baseDst, bitmapPaint)
             return true
         }
 
-        // Draw base un-sliced frame first when partial intensity blending is active
-        val needBlendLayer = intensity < 0.995f
-        if (needBlendLayer) {
-            canvas.drawBitmap(baseBmp, null, baseDst, bitmapPaint)
-            canvas.saveLayerAlpha(0f, 0f, width, height, (intensity * 255f).roundToInt().coerceIn(0, 255))
+        val count = settings.clampedSliceCount()
+        if (count == 1) {
+            val onlyMs = settings.sampleNodeTimeMs(safeBaseMs, 0, clipStartMs, clipEndMs, fps)
+            val onlyBmp = frameProvider(onlyMs) ?: baseBmp
+            val onlyDst = if (onlyBmp === baseBmp) baseDst else computeDstRect(onlyBmp)
+            canvas.drawBitmap(onlyBmp, null, onlyDst, bitmapPaint)
+            return true
         }
 
-        val count = settings.clampedSlices()
-        val isHorizontal = settings.isHorizontalSlices()
-        val axisLen = if (isHorizontal) width else height
-        val sliceLen = axisLen / count.toFloat()
-        val featherFrac = (settings.feather / 100f).coerceIn(0f, 1f)
+        val angleDeg = settings.clampedAngleDeg()
+        val useRotation = abs(angleDeg % 360f) > 0.25f && abs((angleDeg % 360f) - 360f) > 0.25f
+        val rad = Math.toRadians(angleDeg.toDouble())
+        val cx = width * 0.5f
+        val cy = height * 0.5f
+        val halfSpan = (cx * abs(cos(rad)).toFloat() + cy * abs(sin(rad)).toFloat()).coerceAtLeast(1f)
+        val totalSpan = halfSpan * 2f
+        val sliceLen = totalSpan / count.toFloat()
+        val featherFrac = settings.clampedFeather()
         val featherPx = featherFrac * (sliceLen * 0.48f)
+        val diag = hypot(width, height)
+        val stripTop = if (useRotation) cy - diag else 0f
+        val stripBottom = if (useRotation) cy + diag else height
+
         val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         }
 
+        if (useRotation) {
+            canvas.save()
+            canvas.rotate(angleDeg, cx, cy)
+        }
+
         for (i in 0 until count) {
-            val sampleMs = settings.sampleTimeMs(safeBaseMs, i, clipStartMs, clipEndMs)
+            val sampleMs = settings.sampleNodeTimeMs(safeBaseMs, i, clipStartMs, clipEndMs, fps)
             val sliceBmp = frameProvider(sampleMs) ?: baseBmp
             val sliceDst = if (sliceBmp === baseBmp) baseDst else computeDstRect(sliceBmp)
 
-            val s0 = i * sliceLen
-            val s1 = if (i == count - 1) axisLen else (i + 1) * sliceLen
+            val s0 = cx - halfSpan + i * sliceLen
+            val s1 = if (i == count - 1) cx + halfSpan else cx - halfSpan + (i + 1) * sliceLen
 
             if (i == 0 || featherPx <= 1f) {
                 canvas.save()
-                if (isHorizontal) {
-                    canvas.clipRect((s0 - 0.5f).coerceAtLeast(0f), 0f, (s1 + 0.5f).coerceAtMost(width), height)
-                } else {
-                    canvas.clipRect(0f, (s0 - 0.5f).coerceAtLeast(0f), width, (s1 + 0.5f).coerceAtMost(height))
-                }
+                canvas.clipRect((s0 - 0.5f), stripTop, (s1 + 0.5f), stripBottom)
+                if (useRotation) canvas.rotate(-angleDeg, cx, cy)
                 canvas.drawBitmap(sliceBmp, null, sliceDst, bitmapPaint)
                 canvas.restore()
             } else {
-                // 1) Solid core of slice i (starts after feather zone)
+                // 1) Solid core of slice i
                 val coreStart = (s0 + featherPx - 0.5f).coerceAtMost(s1)
                 if (coreStart < s1) {
                     canvas.save()
-                    if (isHorizontal) {
-                        canvas.clipRect(coreStart, 0f, (s1 + 0.5f).coerceAtMost(width), height)
-                    } else {
-                        canvas.clipRect(0f, coreStart, width, (s1 + 0.5f).coerceAtMost(height))
-                    }
+                    canvas.clipRect(coreStart, stripTop, (s1 + 0.5f), stripBottom)
+                    if (useRotation) canvas.rotate(-angleDeg, cx, cy)
                     canvas.drawBitmap(sliceBmp, null, sliceDst, bitmapPaint)
                     canvas.restore()
                 }
 
                 // 2) Feathered alpha-gradient transition strip overlapping slice i-1 seamlessly
-                val blendStart = (s0 - featherPx).coerceAtLeast(0f)
-                val blendEnd = (s0 + featherPx).coerceAtMost(axisLen)
+                val blendStart = (s0 - featherPx).coerceAtLeast(cx - halfSpan)
+                val blendEnd = (s0 + featherPx).coerceAtMost(cx + halfSpan)
                 if (blendEnd - blendStart > 1f) {
-                    if (isHorizontal) {
-                        canvas.saveLayer(blendStart, 0f, blendEnd, height, null)
-                        canvas.clipRect(blendStart, 0f, blendEnd, height)
-                        canvas.drawBitmap(sliceBmp, null, sliceDst, bitmapPaint)
-                        maskPaint.shader = LinearGradient(
-                            blendStart, 0f, blendEnd, 0f,
-                            0x00000000, 0xFF000000.toInt(),
-                            Shader.TileMode.CLAMP,
-                        )
-                        canvas.drawRect(blendStart, 0f, blendEnd, height, maskPaint)
-                        canvas.restore()
-                    } else {
-                        canvas.saveLayer(0f, blendStart, width, blendEnd, null)
-                        canvas.clipRect(0f, blendStart, width, blendEnd)
-                        canvas.drawBitmap(sliceBmp, null, sliceDst, bitmapPaint)
-                        maskPaint.shader = LinearGradient(
-                            0f, blendStart, 0f, blendEnd,
-                            0x00000000, 0xFF000000.toInt(),
-                            Shader.TileMode.CLAMP,
-                        )
-                        canvas.drawRect(0f, blendStart, width, blendEnd, maskPaint)
-                        canvas.restore()
-                    }
+                    canvas.saveLayer(blendStart, stripTop, blendEnd, stripBottom, null)
+                    canvas.clipRect(blendStart, stripTop, blendEnd, stripBottom)
+                    canvas.save()
+                    if (useRotation) canvas.rotate(-angleDeg, cx, cy)
+                    canvas.drawBitmap(sliceBmp, null, sliceDst, bitmapPaint)
+                    canvas.restore()
+                    maskPaint.shader = LinearGradient(
+                        blendStart, 0f, blendEnd, 0f,
+                        0x00000000, 0xFF000000.toInt(),
+                        Shader.TileMode.CLAMP,
+                    )
+                    canvas.drawRect(blendStart, stripTop, blendEnd, stripBottom, maskPaint)
+                    canvas.restore()
                 }
             }
         }
 
-        if (needBlendLayer) {
+        if (useRotation) {
             canvas.restore()
         }
         return true
@@ -203,7 +206,7 @@ class TimeslicePreviewFramePool {
     private val buckets = sortedSetOf<Long>()
 
     companion object {
-        const val STEP_MS = 60L
+        const val STEP_MS = 33L
     }
 
     private fun quantize(ms: Long): Long = ((ms.coerceAtLeast(0L) + STEP_MS / 2L) / STEP_MS) * STEP_MS
@@ -250,6 +253,7 @@ class TimeslicePreviewFramePool {
         clipEndMs: Long,
         centerTimeMs: Long,
         settings: TimesliceSettings,
+        fps: Float = 30f,
         onBatchDecoded: () -> Unit,
     ) = withContext(Dispatchers.IO) {
         resetIfClipChanged(cacheKey)
@@ -257,9 +261,9 @@ class TimeslicePreviewFramePool {
         try {
             retriever.setDataSource(context, uri)
 
-            // Priority 1: decode exact slice timestamps around current centerTimeMs so paused UI updates instantaneously
-            val sliceTargets = (0 until settings.clampedSlices()).map { idx ->
-                settings.sampleTimeMs(centerTimeMs, idx, clipStartMs, clipEndMs)
+            // Priority 1: decode exact Node Mode slice timestamps around centerTimeMs immediately
+            val sliceTargets = (0 until settings.clampedSliceCount()).map { idx ->
+                settings.sampleNodeTimeMs(centerTimeMs, idx, clipStartMs, clipEndMs, fps)
             }.distinct()
 
             var decodedCount = 0
@@ -275,10 +279,10 @@ class TimeslicePreviewFramePool {
             }
             if (decodedCount > 0) onBatchDecoded()
 
-            // Priority 2: warm quantized 60ms timeline neighborhood (-1.2s .. +4.5s) then remaining clip for smooth playback
+            // Priority 2: warm quantized 33ms timeline neighborhood for smooth real-time playback
             val safeEnd = clipEndMs.coerceAtLeast(clipStartMs + 200L)
-            val nearStart = (centerTimeMs - 1_200L).coerceAtLeast(clipStartMs)
-            val nearEnd = (centerTimeMs + 4_500L).coerceAtMost(safeEnd)
+            val nearStart = (centerTimeMs - 400L).coerceAtLeast(clipStartMs)
+            val nearEnd = (centerTimeMs + 3_200L).coerceAtMost(safeEnd)
             val orderedBuckets = mutableListOf<Long>()
             var cur = nearStart
             while (cur <= nearEnd) {
@@ -312,13 +316,13 @@ class TimeslicePreviewFramePool {
     private fun decodeScaledFrame(retriever: MediaMetadataRetriever, timeMs: Long): Bitmap? {
         val timeUs = timeMs.coerceAtLeast(0L) * 1_000L
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, 420, 420)
-                ?: retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 420, 420)
+            retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, 360, 360)
+                ?: retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 360)
         } else {
             retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?.let { raw ->
                     val maxSide = maxOf(raw.width, raw.height).coerceAtLeast(1)
-                    val s = minOf(1f, 420f / maxSide.toFloat())
+                    val s = minOf(1f, 360f / maxSide.toFloat())
                     val w = (raw.width * s).roundToInt().coerceAtLeast(64)
                     val h = (raw.height * s).roundToInt().coerceAtLeast(64)
                     val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
@@ -356,8 +360,8 @@ object TimesliceProcessor {
         onProgress: (Int) -> Unit,
     ): Result<TimesliceResult> {
         val dir = File(context.cacheDir, "timeslice_exports").apply { mkdirs() }
-        val sig = "${clipId.take(10)}_${trimStartMs}_${trimEndMs}_${settings.slices}_${settings.direction.ordinal}_${(settings.timeSpreadSec * 100).roundToInt()}_${settings.feather.roundToInt()}_${(settings.intensity * 100).roundToInt()}_${targetHeight}_${targetFps}"
-        val outFile = File(dir, "ts_$sig.mp4")
+        val sig = "${clipId.take(10)}_${trimStartMs}_${trimEndMs}_${settings.clampedSliceCount()}_${settings.clampedAngleDeg().roundToInt()}_${settings.clampedFrameInterval()}_${settings.clampedFrameOffset()}_${(settings.clampedFeather() * 100).roundToInt()}_${if (settings.animate) 1 else 0}_${targetHeight}_${targetFps}"
+        val outFile = File(dir, "ts_node_$sig.mp4")
         val workDir = File(context.cacheDir, "ts_tmp_${UUID.randomUUID()}").apply { mkdirs() }
 
         if (outFile.exists() && outFile.length() > 4096L) {
@@ -373,8 +377,8 @@ object TimesliceProcessor {
 
         try {
             val retriever = MediaMetadataRetriever()
-            var metaW = targetWidth.takeIf { it > 0 } ?: 1280
-            var metaH = targetHeight.takeIf { it > 0 } ?: 720
+            var metaW = targetWidth.takeIf { it > 0 } ?: 1080
+            var metaH = targetHeight.takeIf { it > 0 } ?: 1920
             var metaDur = 0L
             try {
                 retriever.setDataSource(context, sourceUri)
@@ -390,9 +394,12 @@ object TimesliceProcessor {
             val safeEndMs = trimEndMs.coerceIn(safeStartMs + 200L, srcDur)
             val spanMs = (safeEndMs - safeStartMs).coerceAtLeast(200L)
 
-            val scaleDown = minOf(1f, targetHeight.coerceIn(480, 2160).toFloat() / maxOf(metaW, metaH).toFloat())
-            val encW = (((metaW * scaleDown).roundToInt().coerceAtLeast(256)) / 2) * 2
-            val encH = (((metaH * scaleDown).roundToInt().coerceAtLeast(256)) / 2) * 2
+            val shortSide = minOf(metaW, metaH).coerceAtLeast(1)
+            val scaleByShort = minOf(1f, targetHeight.coerceIn(480, 2160).toFloat() / shortSide.toFloat())
+            val maxLongCap = if (targetHeight > 1080) 3840f else 1920f
+            val scaleCap = minOf(scaleByShort, maxLongCap / maxOf(metaW, metaH).coerceAtLeast(1).toFloat())
+            val encW = (((metaW * scaleCap).roundToInt().coerceAtLeast(256)) / 2) * 2
+            val encH = (((metaH * scaleCap).roundToInt().coerceAtLeast(256)) / 2) * 2
             val safeFps = targetFps.coerceIn(24, 60)
 
             onProgress(5)
@@ -440,7 +447,7 @@ object TimesliceProcessor {
             }.getOrDefault(false)
 
             if (hasAudio && audioOnlyFile.exists() && audioOnlyFile.length() > 0L) {
-                muxVideoAndAudio(videoOnlyFile, audioOnlyFile, outFile)
+                muxVideoAndAudio(videoOnlyFile, audioOnlyFile, outFile, spanMs)
             } else {
                 videoOnlyFile.copyTo(outFile, overwrite = true)
             }
@@ -722,6 +729,7 @@ object TimesliceProcessor {
                     clipStartMs = startMs,
                     clipEndMs = endMs,
                     settings = settings,
+                    fps = fps.toFloat(),
                     fitMode = CanvasFitMode.FILL,
                     frameProvider = { reqMs -> lookupNearestDecoded(reqMs) },
                 )
@@ -751,7 +759,7 @@ object TimesliceProcessor {
         outputFile: File,
     ): Boolean {
         val extractor = MediaExtractor()
-        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxer: MediaMuxer? = null
         var muxerStarted = false
         try {
             extractor.setDataSource(context, uri, null)
@@ -766,6 +774,7 @@ object TimesliceProcessor {
             if (audioIdx < 0) return false
             extractor.selectTrack(audioIdx)
             val fmt = extractor.getTrackFormat(audioIdx)
+            muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             val outTrack = muxer.addTrack(fmt)
             muxer.start()
             muxerStarted = true
@@ -775,59 +784,92 @@ object TimesliceProcessor {
             extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             val buf = ByteBuffer.allocate(256 * 1024)
             val info = MediaCodec.BufferInfo()
+            var lastPts = -1L
+            var wroteAny = false
             while (true) {
                 val sz = extractor.readSampleData(buf, 0)
                 val st = extractor.sampleTime
                 if (sz < 0 || st > endUs) break
                 if (st >= startUs - 20_000L) {
-                    info.set(0, sz, (st - startUs).coerceAtLeast(0L), extractor.sampleFlags)
+                    val pts = (st - startUs).coerceAtLeast(lastPts + 1L)
+                    lastPts = pts
+                    info.set(0, sz, pts, extractor.sampleFlags)
                     muxer.writeSampleData(outTrack, buf, info)
+                    wroteAny = true
                 }
                 extractor.advance()
             }
-            return true
+            return wroteAny
+        } catch (e: Exception) {
+            Log.w("TimesliceProcessor", "extractAudioTrimmed skipped: ${e.message}")
+            return false
         } finally {
             runCatching { extractor.release() }
-            if (muxerStarted) runCatching { muxer.stop() }
-            runCatching { muxer.release() }
+            muxer?.let { m ->
+                if (muxerStarted) runCatching { m.stop() }
+                runCatching { m.release() }
+            }
         }
     }
 
-    private fun muxVideoAndAudio(videoFile: File, audioFile: File, outputFile: File) {
+    private fun muxVideoAndAudio(videoFile: File, audioFile: File, outputFile: File, targetDurationMs: Long) {
         val vExt = MediaExtractor()
         val aExt = MediaExtractor()
-        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxer: MediaMuxer? = null
         var muxerStarted = false
         try {
             vExt.setDataSource(videoFile.absolutePath)
             aExt.setDataSource(audioFile.absolutePath)
+            if (vExt.trackCount == 0 || aExt.trackCount == 0) {
+                videoFile.copyTo(outputFile, overwrite = true)
+                return
+            }
             vExt.selectTrack(0)
             aExt.selectTrack(0)
+            muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             val vTrack = muxer.addTrack(vExt.getTrackFormat(0))
             val aTrack = muxer.addTrack(aExt.getTrackFormat(0))
             muxer.start()
             muxerStarted = true
             val buf = ByteBuffer.allocate(512 * 1024)
             val info = MediaCodec.BufferInfo()
+            var maxVideoPtsUs = targetDurationMs.coerceAtLeast(200L) * 1_000L
+            var lastVPts = -1L
             while (true) {
                 val sz = vExt.readSampleData(buf, 0)
                 if (sz < 0) break
-                info.set(0, sz, vExt.sampleTime, vExt.sampleFlags)
+                val pts = vExt.sampleTime.coerceAtLeast(lastVPts + 1L)
+                lastVPts = pts
+                maxVideoPtsUs = maxOf(maxVideoPtsUs, pts)
+                info.set(0, sz, pts, vExt.sampleFlags)
                 muxer.writeSampleData(vTrack, buf, info)
                 vExt.advance()
             }
+            var lastAPts = -1L
             while (true) {
                 val sz = aExt.readSampleData(buf, 0)
                 if (sz < 0) break
-                info.set(0, sz, aExt.sampleTime, aExt.sampleFlags)
+                val rawPts = aExt.sampleTime
+                if (rawPts > maxVideoPtsUs + 20_000L) break
+                val pts = rawPts.coerceAtLeast(lastAPts + 1L)
+                lastAPts = pts
+                info.set(0, sz, pts, aExt.sampleFlags)
                 muxer.writeSampleData(aTrack, buf, info)
                 aExt.advance()
             }
+        } catch (e: Exception) {
+            Log.e("TimesliceProcessor", "muxVideoAndAudio failed; falling back to video-only", e)
+            runCatching { outputFile.delete() }
+            videoFile.copyTo(outputFile, overwrite = true)
         } finally {
             runCatching { vExt.release() }
             runCatching { aExt.release() }
-            if (muxerStarted) runCatching { muxer.stop() }
-            runCatching { muxer.release() }
+            muxer?.let { m ->
+                if (muxerStarted) {
+                    runCatching { m.stop() }.onFailure { Log.e("TimesliceProcessor", "MediaMuxer.stop() error", it) }
+                }
+                runCatching { m.release() }
+            }
         }
     }
 

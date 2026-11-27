@@ -19,14 +19,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.BookmarkAdded
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewWeek
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -66,7 +69,7 @@ import com.example.data.model.ClipAnimationType
 import com.example.data.model.EffectMainTab
 import com.example.data.model.EffectSubCategory
 import com.example.data.model.FfxPreset
-import com.example.data.model.TimesliceDirection
+import com.example.data.model.TimesliceMode
 import com.example.data.model.TimesliceSettings
 import com.example.data.model.TransitionSpec
 import com.example.data.model.TransitionType
@@ -221,7 +224,7 @@ fun EffectsToolSheet(
                         color = Color.White,
                     )
                     Text(
-                        text = "Multi-frame clone trail across 3–30 slices",
+                        text = "CapCut Ghost Mode (Delay Glitch + Stretch) & Node Pro Time Slice",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary,
                     )
@@ -231,7 +234,7 @@ fun EffectsToolSheet(
                     shape = RoundedCornerShape(8.dp),
                 ) {
                     Text(
-                        text = if (timesliceActive) "ACTIVE" else "EXCLUSIVE",
+                        text = if (timesliceActive) "ACTIVE" else "2 MODES",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
                         color = if (timesliceActive) Color.White else CyberCyan,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -264,6 +267,7 @@ fun EffectsToolSheet(
                     CapCutEffectType.LED_MATRIX -> Color(0xFF38BDF8)
                     CapCutEffectType.GOLDEN_RAY -> Color(0xFFFBBF24)
                     CapCutEffectType.TRACKING_GLITCH -> Color(0xFFFB7185)
+                    CapCutEffectType.DELAY_GLITCH -> ElectricViolet
                     CapCutEffectType.NONE -> TextSecondary
                 }
                 Column(
@@ -582,13 +586,15 @@ fun FiltersToolSheet(
 @Composable
 fun TimesliceToolSheet(
     clip: VideoClipSegment,
-    canUndo: Boolean,
+    onApplyCapCutMode: () -> Unit,
+    onApplyNodeMode: () -> Unit,
     onUpdateTimeslice: (TimesliceSettings, Boolean) -> Unit,
-    onDeleteTimeslice: () -> Unit,
-    onUndo: () -> Unit,
+    onTogglePreview: () -> Unit,
+    onRemoveTimeslice: () -> Unit,
+    onSaveAsPreset: () -> Unit,
     onClose: () -> Unit,
 ) {
-    var localSettings by remember(clip.id, clip.timeslice) { mutableStateOf(clip.timeslice.copy(enabled = true)) }
+    var localSettings by remember(clip.id, clip.timeslice) { mutableStateOf(clip.timeslice) }
     val clipDurSec = clip.baseDurationMs() / 1000f
 
     Column(
@@ -597,9 +603,9 @@ fun TimesliceToolSheet(
             .background(ObsidianSurface)
             .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(bottom = 12.dp),
+            .padding(bottom = 14.dp),
     ) {
-        // Header with clip scope, Undo, Delete, and Done
+        // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -623,204 +629,527 @@ fun TimesliceToolSheet(
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = Color.White,
                     )
+                    if (localSettings.enabled) {
+                        Surface(
+                            color = if (localSettings.isNodeModeActive()) CyberCyan.copy(alpha = 0.2f) else ElectricViolet.copy(alpha = 0.28f),
+                            shape = RoundedCornerShape(6.dp),
+                        ) {
+                            Text(
+                                text = localSettings.mode.badgeLabel,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                                color = if (localSettings.isNodeModeActive()) CyberCyan else Color.White,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                 }
                 Text(
-                    text = "${clip.displayName} • ${String.format(Locale.US, "%.1fs", clipDurSec)} (Split first to slice a part)",
+                    text = "${clip.displayName} • ${String.format(Locale.US, "%.1fs", clipDurSec)} (Choose Mode 1 or Mode 2)",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = onUndo,
-                    enabled = canUndo,
-                    modifier = Modifier.minimumInteractiveComponentSize().testTag("timeslice_undo_button"),
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.minimumInteractiveComponentSize().testTag("timeslice_done_button"),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = "Done Timeslice",
+                    tint = LunaMint,
+                )
+            }
+        }
+
+        // 2 Mode Selection Cards: CapCut Mode + Node Mode
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            val capcutSelected = localSettings.isCapCutModeActive()
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        if (capcutSelected) ElectricViolet.copy(alpha = 0.22f)
+                        else ObsidianSurfaceContainer
+                    )
+                    .border(
+                        width = if (capcutSelected) 1.5.dp else 1.dp,
+                        color = if (capcutSelected) ElectricViolet else OutlineSubtle,
+                        shape = RoundedCornerShape(14.dp),
+                    )
+                    .clickable(onClick = onApplyCapCutMode)
+                    .padding(12.dp)
+                    .testTag("timeslice_capcut_mode_card"),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Undo,
-                        contentDescription = "Undo Timeslice",
-                        tint = if (canUndo) Color.White else TextSecondary.copy(alpha = 0.4f),
+                    Text(
+                        text = "CapCut Mode",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                    )
+                    Surface(
+                        color = ElectricViolet.copy(alpha = 0.28f),
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            text = "Easy / Ghost",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "Delay Glitch across cut (V1+V2) + Stretch Left transition (0.4s)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Button(
+                    onClick = onApplyCapCutMode,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (capcutSelected) ElectricViolet else ObsidianSurface,
+                        contentColor = Color.White,
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .testTag("timeslice_apply_capcut_btn"),
+                ) {
+                    Text(
+                        text = if (capcutSelected) "Applied" else "Apply",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                     )
                 }
-                IconButton(
+            }
+
+            val nodeSelected = localSettings.isNodeModeActive()
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        if (nodeSelected) CyberCyan.copy(alpha = 0.16f)
+                        else ObsidianSurfaceContainer
+                    )
+                    .border(
+                        width = if (nodeSelected) 1.5.dp else 1.dp,
+                        color = if (nodeSelected) CyberCyan else OutlineSubtle,
+                        shape = RoundedCornerShape(14.dp),
+                    )
+                    .clickable(onClick = onApplyNodeMode)
+                    .padding(12.dp)
+                    .testTag("timeslice_node_mode_card"),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Node Mode",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                    )
+                    Surface(
+                        color = CyberCyan.copy(alpha = 0.22f),
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            text = "Real / Pro",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                            color = CyberCyan,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "Real Time Slice strips at T + (i·Interval + Offset) with soft feather",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Button(
+                    onClick = onApplyNodeMode,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (nodeSelected) CyberCyan else ObsidianSurface,
+                        contentColor = if (nodeSelected) ObsidianBackground else Color.White,
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .testTag("timeslice_apply_node_btn"),
+                ) {
+                    Text(
+                        text = if (nodeSelected) "Applied" else "Apply",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (localSettings.enabled) {
+            if (localSettings.isCapCutModeActive()) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(ObsidianSurfaceContainer)
+                            .border(1.dp, ElectricViolet.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Filled.Layers, contentDescription = null, tint = CyberCyan, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = "Object: All Videos (V1+V2) • Delay Glitch + Stretch Left",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color.White,
+                        )
+                    }
+
+                    TimesliceParamSlider(
+                        label = "Amount",
+                        value = localSettings.capcutAmount,
+                        range = 0f..100f,
+                        steps = 0,
+                        readout = "${localSettings.capcutAmount.roundToInt()}",
+                        sliderTag = "timeslice_capcut_amount_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(capcutAmount = v.coerceIn(0f, 100f))
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    TimesliceParamSlider(
+                        label = "Speed",
+                        value = localSettings.capcutSpeed,
+                        range = 0f..100f,
+                        steps = 0,
+                        readout = "${localSettings.capcutSpeed.roundToInt()}",
+                        sliderTag = "timeslice_capcut_speed_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(capcutSpeed = v.coerceIn(0f, 100f))
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    TimesliceParamSlider(
+                        label = "Rotate",
+                        value = localSettings.capcutRotateDeg,
+                        range = 0f..360f,
+                        steps = 0,
+                        readout = "${localSettings.capcutRotateDeg.roundToInt()}°",
+                        sliderTag = "timeslice_capcut_rotate_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(capcutRotateDeg = v.coerceIn(0f, 360f))
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    TimesliceParamSlider(
+                        label = "Stretch Left Duration",
+                        value = localSettings.capcutStretchDurationSec,
+                        range = 0.3f..0.5f,
+                        steps = 0,
+                        readout = String.format(Locale.US, "%.2fs", localSettings.capcutStretchDurationSec),
+                        sliderTag = "timeslice_capcut_stretch_slider",
+                        onValueChange = { v ->
+                            val snapped = ((v * 20f).roundToInt() / 20f).coerceIn(0.3f, 0.5f)
+                            val next = localSettings.copy(capcutStretchDurationSec = snapped)
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+                }
+            } else {
+                // Node Mode: Viral Node preset button + Animate toggle + 5 exact sliders
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val preset = TimesliceSettings.viralNodePreset(
+                                previewEnabled = localSettings.previewEnabled,
+                                animate = localSettings.animate,
+                            )
+                            localSettings = preset
+                            onUpdateTimeslice(preset, true)
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.minimumInteractiveComponentSize().testTag("timeslice_viral_node_btn"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = CyberCyan,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Viral Node", color = CyberCyan, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(ObsidianSurfaceContainer)
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Animate",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White,
+                            )
+                            Text(
+                                text = if (localSettings.animate) "Offset moves over time" else "Static offset",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Switch(
+                            checked = localSettings.animate,
+                            onCheckedChange = { checked ->
+                                val next = localSettings.copy(
+                                    enabled = true,
+                                    mode = TimesliceMode.NODE,
+                                    animate = checked,
+                                )
+                                localSettings = next
+                                onUpdateTimeslice(next, true)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ObsidianBackground,
+                                checkedTrackColor = CyberCyan,
+                            ),
+                            modifier = Modifier.testTag("timeslice_animate_toggle"),
+                        )
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    // Slice Count: 1 to 10 (default 5)
+                    TimesliceParamSlider(
+                        label = "Slice Count",
+                        value = localSettings.clampedSliceCount().toFloat(),
+                        range = 1f..10f,
+                        steps = 8,
+                        readout = "${localSettings.clampedSliceCount()}",
+                        sliderTag = "timeslice_slice_count_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(
+                                enabled = true,
+                                mode = TimesliceMode.NODE,
+                                sliceCount = v.roundToInt().coerceIn(1, 10),
+                            )
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    // Slice Angle: 0° to 360° (default 0°, 0=Vertical, 90=Horizontal)
+                    TimesliceParamSlider(
+                        label = "Slice Angle",
+                        value = localSettings.clampedAngleDeg(),
+                        range = 0f..360f,
+                        steps = 0,
+                        readout = "${localSettings.clampedAngleDeg().roundToInt()}°" +
+                            when (localSettings.clampedAngleDeg().roundToInt()) {
+                                0, 180, 360 -> " (Vert)"
+                                90, 270 -> " (Horiz)"
+                                else -> ""
+                            },
+                        sliderTag = "timeslice_slice_angle_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(
+                                enabled = true,
+                                mode = TimesliceMode.NODE,
+                                sliceAngleDeg = v.roundToInt().coerceIn(0, 360).toFloat(),
+                            )
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    // Frame Interval: 0 to 10 (default 2)
+                    TimesliceParamSlider(
+                        label = "Frame Interval",
+                        value = localSettings.clampedFrameInterval().toFloat(),
+                        range = 0f..10f,
+                        steps = 9,
+                        readout = "${localSettings.clampedFrameInterval()}f",
+                        sliderTag = "timeslice_frame_interval_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(
+                                enabled = true,
+                                mode = TimesliceMode.NODE,
+                                frameInterval = v.roundToInt().coerceIn(0, 10),
+                            )
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    // Frame Offset: 0 to 100 (default 25)
+                    TimesliceParamSlider(
+                        label = "Frame Offset",
+                        value = localSettings.clampedFrameOffset().toFloat(),
+                        range = 0f..100f,
+                        steps = 0,
+                        readout = "${localSettings.clampedFrameOffset()}f",
+                        sliderTag = "timeslice_frame_offset_slider",
+                        onValueChange = { v ->
+                            val next = localSettings.copy(
+                                enabled = true,
+                                mode = TimesliceMode.NODE,
+                                frameOffset = v.roundToInt().coerceIn(0, 100),
+                            )
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+
+                    // Feather: 0.00 to 1.00 (default 0.50)
+                    TimesliceParamSlider(
+                        label = "Feather",
+                        value = localSettings.clampedFeather(),
+                        range = 0f..1f,
+                        steps = 0,
+                        readout = String.format(Locale.US, "%.2f", localSettings.clampedFeather()),
+                        sliderTag = "timeslice_feather_slider",
+                        onValueChange = { v ->
+                            val snapped = ((v * 100f).roundToInt() / 100f).coerceIn(0f, 1f)
+                            val next = localSettings.copy(
+                                enabled = true,
+                                mode = TimesliceMode.NODE,
+                                sliceFeather = snapped,
+                            )
+                            localSettings = next
+                            onUpdateTimeslice(next, false)
+                        },
+                        onValueChangeFinished = { onUpdateTimeslice(localSettings, true) },
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Shared Actions Row: [Preview], [Remove Timeslice], [Save as Preset]
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = onTogglePreview,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("timeslice_preview_button"),
+                ) {
+                    Icon(
+                        imageVector = if (localSettings.previewEnabled) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                        contentDescription = "Preview",
+                        tint = if (localSettings.previewEnabled) CyberCyan else TextSecondary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (localSettings.previewEnabled) "Preview ON" else "Preview OFF",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = if (localSettings.previewEnabled) CyberCyan else TextSecondary,
+                        maxLines = 1,
+                    )
+                }
+
+                OutlinedButton(
                     onClick = {
-                        onDeleteTimeslice()
+                        onRemoveTimeslice()
                         onClose()
                     },
-                    modifier = Modifier.minimumInteractiveComponentSize().testTag("timeslice_delete_button"),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("timeslice_remove_button"),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.DeleteOutline,
-                        contentDescription = "Delete Timeslice",
+                        contentDescription = "Remove Timeslice",
                         tint = Color(0xFFFB7185),
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Remove",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFFFB7185),
+                        maxLines = 1,
                     )
                 }
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.minimumInteractiveComponentSize().testTag("timeslice_done_button"),
+
+                Button(
+                    onClick = onSaveAsPreset,
+                    colors = ButtonDefaults.buttonColors(containerColor = LunaMint, contentColor = ObsidianBackground),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("timeslice_save_preset_button"),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Check,
-                        contentDescription = "Apply Timeslice",
-                        tint = LunaMint,
+                        imageVector = Icons.Filled.BookmarkAdded,
+                        contentDescription = "Save as Preset",
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Save Preset",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
                     )
                 }
             }
-        }
-
-        // Preview toggle (On / Off)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column {
-                Text(
-                    text = "Preview",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                    color = Color.White,
-                )
-                Text(
-                    text = if (localSettings.previewEnabled) "Live cached slice preview active" else "Preview hidden (still kept for Export)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                )
-            }
-            Switch(
-                checked = localSettings.previewEnabled,
-                onCheckedChange = { checked ->
-                    val next = localSettings.copy(enabled = true, previewEnabled = checked)
-                    localSettings = next
-                    onUpdateTimeslice(next, true)
-                },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = ElectricViolet,
-                ),
-                modifier = Modifier.testTag("timeslice_preview_toggle"),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // Direction selector
-        Text(
-            text = "Direction",
-            style = MaterialTheme.typography.labelMedium,
-            color = TextSecondary,
-            modifier = Modifier.padding(horizontal = 16.dp),
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TimesliceDirection.entries.forEach { dir ->
-                val sel = localSettings.direction == dir
-                FilterChip(
-                    selected = sel,
-                    onClick = {
-                        val next = localSettings.copy(enabled = true, direction = dir)
-                        localSettings = next
-                        onUpdateTimeslice(next, true)
-                    },
-                    label = {
-                        Text(
-                            text = dir.label,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = ElectricViolet.copy(alpha = 0.28f),
-                        selectedLabelColor = Color.White,
-                    ),
-                    modifier = Modifier.minimumInteractiveComponentSize().testTag("timeslice_dir_${dir.name.lowercase()}"),
-                )
-            }
-        }
-
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            // Slices: 3 to 30
-            TimesliceParamSlider(
-                label = "Slices",
-                value = localSettings.slices.toFloat(),
-                range = 3f..30f,
-                steps = 26,
-                readout = "${localSettings.slices}",
-                sliderTag = "timeslice_slices_slider",
-                onValueChange = { v ->
-                    val next = localSettings.copy(enabled = true, slices = v.roundToInt().coerceIn(3, 30))
-                    localSettings = next
-                    onUpdateTimeslice(next, false)
-                },
-                onValueChangeFinished = {
-                    onUpdateTimeslice(localSettings, true)
-                },
-            )
-
-            // Time Spread: 0.1s to 1.0s
-            TimesliceParamSlider(
-                label = "Time Spread",
-                value = localSettings.timeSpreadSec,
-                range = 0.1f..1.0f,
-                steps = 0,
-                readout = String.format(Locale.US, "%.2fs", localSettings.timeSpreadSec),
-                sliderTag = "timeslice_spread_slider",
-                onValueChange = { v ->
-                    val snapped = ((v * 20f).roundToInt() / 20f).coerceIn(0.1f, 1.0f)
-                    val next = localSettings.copy(enabled = true, timeSpreadSec = snapped)
-                    localSettings = next
-                    onUpdateTimeslice(next, false)
-                },
-                onValueChangeFinished = {
-                    onUpdateTimeslice(localSettings, true)
-                },
-            )
-
-            // Feather / Soft Edge: 0 to 100
-            TimesliceParamSlider(
-                label = "Feather / Soft Edge",
-                value = localSettings.feather,
-                range = 0f..100f,
-                steps = 0,
-                readout = "${localSettings.feather.roundToInt()}%",
-                sliderTag = "timeslice_feather_slider",
-                onValueChange = { v ->
-                    val next = localSettings.copy(enabled = true, feather = v.coerceIn(0f, 100f))
-                    localSettings = next
-                    onUpdateTimeslice(next, false)
-                },
-                onValueChangeFinished = {
-                    onUpdateTimeslice(localSettings, true)
-                },
-            )
-
-            // Intensity: 0 to 100%
-            TimesliceParamSlider(
-                label = "Intensity",
-                value = localSettings.intensity * 100f,
-                range = 0f..100f,
-                steps = 0,
-                readout = "${(localSettings.intensity * 100).roundToInt()}%",
-                sliderTag = "timeslice_intensity_slider",
-                onValueChange = { v ->
-                    val next = localSettings.copy(enabled = true, intensity = (v / 100f).coerceIn(0f, 1f))
-                    localSettings = next
-                    onUpdateTimeslice(next, false)
-                },
-                onValueChangeFinished = {
-                    onUpdateTimeslice(localSettings, true)
-                },
-            )
         }
     }
 }

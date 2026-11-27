@@ -165,11 +165,13 @@ object VideoEffectsEngine {
         val clipDuration = clip.timelineDurationMs()
 
         // Shift timeline-global effect/transition windows into this clip's local presentation time
-        val localEffects = effectLayers.mapNotNull { fx ->
-            val s = (fx.startMs - clipStartInTimelineMs).coerceAtLeast(0L)
-            val e = (fx.endMs - clipStartInTimelineMs).coerceAtMost(clipDuration)
-            if (e > s) fx.copy(startMs = s, endMs = e) else null
-        }
+        val localEffects = effectLayers
+            .filter { clip.trackIndex == 0 || it.applyToAllVideos }
+            .mapNotNull { fx ->
+                val s = (fx.startMs - clipStartInTimelineMs).coerceAtLeast(0L)
+                val e = (fx.endMs - clipStartInTimelineMs).coerceAtMost(clipDuration)
+                if (e > s) fx.copy(startMs = s, endMs = e) else null
+            }
         val localTransitions = transitionWindows.mapNotNull { tr ->
             val localBoundary = tr.boundaryMs - clipStartInTimelineMs
             if (localBoundary in -tr.durationMs..(clipDuration + tr.durationMs)) {
